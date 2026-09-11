@@ -17,6 +17,7 @@ from src.engine_wrapper import EngineWrapper
 from src.game_state import GameMode, GameState
 from src.menu import MenuScreen
 from src.analysis_screen import AnalysisScreen, _BackToMenu
+from src.live_tracking_screen import LiveTrackingScreen
 from src.windows_clickthrough import install_windows_clickthrough
 
 logging.basicConfig(
@@ -109,8 +110,20 @@ class ChessApp:
             result = MenuScreen(
                 self.screen, engine_available=self.engine.is_available()
             ).run()
+            if result.tracking_mode:
+                self._run_tracking(result)
+                continue
             self._start_game(result)
             self._game_loop()
+
+    def _run_tracking(self, result) -> None:
+        """Abre el registrador local; no inicia motor ni habilita mover el tablero."""
+        LiveTrackingScreen(
+            self.screen,
+            self.piece_images,
+            result.initial_fen,
+            white_bottom=not bool(result.initial_flipped),
+        ).run()
 
     # ── Inicio de partida ──────────────────────────────────────────────────
 
