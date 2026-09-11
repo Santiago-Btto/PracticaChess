@@ -124,7 +124,8 @@ class ChessApp:
         self.gui   = BoardGUI(
             screen=self.screen,
             piece_images=self.piece_images,
-            flipped=(result.human_color == chess.BLACK and result.mode == GameMode.HUMAN_VS_AI),
+            flipped=(result.initial_flipped if result.initial_flipped is not None else
+                     result.human_color == chess.BLACK and result.mode == GameMode.HUMAN_VS_AI),
         )
         self.engine.clear()
         if self.engine.is_available():
