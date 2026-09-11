@@ -23,7 +23,11 @@ def _board_image(placements: dict[str, str], assets_dir: Path) -> Image.Image:
     for square, piece_name in placements.items():
         file_index = ord(square[0]) - ord("a")
         rank_from_top = 8 - int(square[1])
-        piece = Image.open(assets_dir / f"{piece_name}.png").convert("RGBA")
+        # Las piezas Neo originales se descargan a 300 px, pero cada casilla
+        # de esta captura sintética mide 80 px, igual que el render de Pygame.
+        piece = Image.open(assets_dir / f"{piece_name}.png").convert("RGBA").resize(
+            (size, size), Image.Resampling.LANCZOS
+        )
         image.paste(piece, (file_index * size, rank_from_top * size), piece)
     return image
 
