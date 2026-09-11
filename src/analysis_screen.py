@@ -412,7 +412,8 @@ class AnalysisScreen:
         # Casillas base
         for sq in range(64):
             col, row = chess.square_file(sq), chess.square_rank(sq)
-            light = (col + row) % 2 == 0
+            # a1 es oscura también en la pantalla de análisis.
+            light = (col + row) % 2 == 1
             rx = BX + col * SQ
             ry = BY + (7 - row) * SQ
             pygame.draw.rect(self.screen,
