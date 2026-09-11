@@ -9,6 +9,7 @@ import threading
 
 import chess
 import chess.engine
+from src.platform_utils import IS_WINDOWS
 
 log = logging.getLogger(__name__)
 
@@ -58,10 +59,13 @@ class EngineWrapper:
             log.info("Stockfish iniciado (%s)", self._path)
             return True
         except FileNotFoundError:
+            hint = (
+                "Coloca stockfish.exe en la carpeta bin del proyecto o añádelo al PATH."
+                if IS_WINDOWS else
+                "Instálalo con: sudo apt install stockfish"
+            )
             log.error(
-                "Stockfish no encontrado en '%s'. "
-                "Instálalo con: sudo apt install stockfish",
-                self._path,
+                "Stockfish no encontrado en '%s'. %s", self._path, hint
             )
             return False
         except Exception as exc:
