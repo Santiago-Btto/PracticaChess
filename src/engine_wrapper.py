@@ -59,6 +59,9 @@ class EngineWrapper:
         self._best_move: chess.Move | None = None
         self._alternative_move: chess.Move | None = None
         self._score: chess.engine.Score | None = None
+        # FEN de la posición que produjo los resultados actuales. Evita que
+        # una pantalla nueva consuma el resultado tardío de otra petición.
+        self._analysis_fen: str | None = None
         self._is_analysing = False
         self._analysis_time = 0.15
 
@@ -147,6 +150,7 @@ class EngineWrapper:
             self._best_move = None
             self._alternative_move = None
             self._score = None
+            self._analysis_fen = None
 
     # ── Resultados (hilo-seguros) ──────────────────────────────────────────
 
@@ -166,6 +170,12 @@ class EngineWrapper:
         """Score relativo a las blancas (PovScore.white())."""
         with self._lock:
             return self._score
+
+    @property
+    def analysis_fen(self) -> str | None:
+        """FEN asociada al último resultado terminado del motor."""
+        with self._lock:
+            return self._analysis_fen
 
     @property
     def is_analysing(self) -> bool:
@@ -196,6 +206,7 @@ class EngineWrapper:
                     self._best_move = best_move
                     self._alternative_move = alternative_move
                     self._score = infos[0]["score"].white()
+                    self._analysis_fen = board.fen()
             except Exception as exc:
                 log.debug("Error en análisis UCI: %s", exc)
             finally:
