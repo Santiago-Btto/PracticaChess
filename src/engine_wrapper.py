@@ -14,6 +14,23 @@ from src.platform_utils import IS_WINDOWS
 log = logging.getLogger(__name__)
 
 
+def ranked_moves(infos: list[dict]) -> tuple[chess.Move | None, chess.Move | None]:
+    """Devuelve la mejor jugada UCI y una variante distinta de menor prioridad."""
+    best_move: chess.Move | None = None
+    alternative_move: chess.Move | None = None
+    for info in infos:
+        pv = info.get("pv", [])
+        move = pv[0] if pv else None
+        if move is None:
+            continue
+        if best_move is None:
+            best_move = move
+        elif move != best_move:
+            alternative_move = move
+            break
+    return best_move, alternative_move
+
+
 class EngineWrapper:
     """
     Interfaz no bloqueante con Stockfish.
@@ -40,6 +57,7 @@ class EngineWrapper:
 
         # Resultados compartidos (protegidos por _lock)
         self._best_move: chess.Move | None = None
+        self._alternative_move: chess.Move | None = None
         self._score: chess.engine.Score | None = None
         self._is_analysing = False
         self._analysis_time = 0.15
@@ -127,6 +145,7 @@ class EngineWrapper:
         """Borra el último best_move y score (p. ej. al iniciar nueva partida)."""
         with self._lock:
             self._best_move = None
+            self._alternative_move = None
             self._score = None
 
     # ── Resultados (hilo-seguros) ──────────────────────────────────────────
@@ -135,6 +154,12 @@ class EngineWrapper:
     def best_move(self) -> chess.Move | None:
         with self._lock:
             return self._best_move
+
+    @property
+    def alternative_move(self) -> chess.Move | None:
+        """Segunda variante de Stockfish, cuando el motor la haya calculado."""
+        with self._lock:
+            return self._alternative_move
 
     @property
     def score(self) -> chess.engine.Score | None:
@@ -163,11 +188,14 @@ class EngineWrapper:
                 result = self._engine.analyse(
                     board,
                     chess.engine.Limit(time=self._analysis_time),
+                    multipv=2,
                 )
-                pv: list = result.get("pv", [])
+                infos = result if isinstance(result, list) else [result]
+                best_move, alternative_move = ranked_moves(infos)
                 with self._lock:
-                    self._best_move = pv[0] if pv else None
-                    self._score = result["score"].white()
+                    self._best_move = best_move
+                    self._alternative_move = alternative_move
+                    self._score = infos[0]["score"].white()
             except Exception as exc:
                 log.debug("Error en análisis UCI: %s", exc)
             finally:
