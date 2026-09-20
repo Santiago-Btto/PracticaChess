@@ -18,3 +18,14 @@ def test_github_workflow_builds_and_retains_the_android_apk():
     assert "mobile/bin/*.apk" in workflow
     assert "--licenses" in workflow
     assert "--sdk_root=" in workflow
+
+
+def test_android_build_is_pinned_to_the_stable_python_311_toolchain():
+    spec = Path("mobile/buildozer.spec").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/android-apk.yml").read_text(encoding="utf-8")
+
+    assert "p4a.branch = master" in spec
+    assert "p4a.commit = 957a3e5f8c270f7aa648ba185e5a68c1077a798d" in spec
+    assert "android.ndk = 25b" in spec
+    assert '"buildozer==1.5.0"' in workflow
+    assert '"cython==0.29.34"' in workflow
