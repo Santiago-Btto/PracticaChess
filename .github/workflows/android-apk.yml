@@ -31,9 +31,10 @@ jobs:
         working-directory: mobile
         run: |
           buildozer android debug || true
-          SDK_MANAGER="$(find "$HOME/.buildozer/android/platform/android-sdk" -type f -name sdkmanager | head -n 1)"
-          test -n "$SDK_MANAGER"
-          yes | "$SDK_MANAGER" --licenses
+          SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
+          SDK_MANAGER="$SDK_ROOT/tools/bin/sdkmanager"
+          test -x "$SDK_MANAGER"
+          yes | "$SDK_MANAGER" --sdk_root="$SDK_ROOT" --licenses
 
       - name: Compilar APK de depuración
         working-directory: mobile
