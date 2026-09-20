@@ -16,3 +16,4 @@ def test_github_workflow_builds_and_retains_the_android_apk():
     assert "buildozer -v android debug" in workflow
     assert "actions/upload-artifact@v4" in workflow
     assert "mobile/bin/*.apk" in workflow
+    assert "--licenses" in workflow

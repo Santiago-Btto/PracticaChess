@@ -27,6 +27,14 @@ jobs:
           python3 -m pip install --upgrade pip setuptools virtualenv
           python3 -m pip install buildozer cython
 
+      - name: Preparar SDK y aceptar licencias Android
+        working-directory: mobile
+        run: |
+          buildozer android debug || true
+          SDK_MANAGER="$(find "$HOME/.buildozer/android/platform/android-sdk" -type f -name sdkmanager | head -n 1)"
+          test -n "$SDK_MANAGER"
+          yes | "$SDK_MANAGER" --licenses
+
       - name: Compilar APK de depuración
         working-directory: mobile
         run: buildozer -v android debug
