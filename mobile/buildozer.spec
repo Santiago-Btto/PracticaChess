@@ -5,7 +5,10 @@ package.domain = com.santiagobtto
 source.dir = .
 source.include_exts = py,png,jpg,jpeg,kv,atlas,ttf
 version = 0.1.0
-requirements = python3,kivy,python-chess
+# ``chess`` es el paquete que provee ``import chess``. Declararlo directamente
+# evita que python-for-android omita la dependencia transitiva del metapaquete
+# ``python-chess`` al empaquetar la APK.
+requirements = python3,kivy,chess
 orientation = portrait
 fullscreen = 0
 android.permissions =

@@ -6,10 +6,24 @@ from pathlib import Path
 def test_android_build_profile_uses_kivy_and_keeps_core_play_offline():
     spec = Path("mobile/buildozer.spec").read_text(encoding="utf-8")
 
-    assert "requirements = python3,kivy,python-chess" in spec
+    assert "requirements = python3,kivy,chess" in spec
     assert "android.permissions =" in spec
     assert "android.permissions = INTERNET" not in spec
     assert "orientation = portrait" in spec
+
+
+def test_android_build_profile_packages_the_importable_chess_module_directly():
+    """python-for-android debe recibir el paquete que expone ``import chess``."""
+    parser = configparser.ConfigParser()
+    parser.read("mobile/buildozer.spec", encoding="utf-8")
+
+    requirements = {
+        requirement.strip()
+        for requirement in parser["app"]["requirements"].split(",")
+    }
+
+    assert "chess" in requirements
+    assert "python-chess" not in requirements
 
 
 def test_github_workflow_builds_and_retains_the_android_apk():
