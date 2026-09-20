@@ -8,12 +8,6 @@ version = 0.1.0
 requirements = python3,kivy,python-chess
 orientation = portrait
 fullscreen = 0
-
-[buildozer]
-log_level = 2
-warn_on_root = 1
-
-[app:android]
 android.permissions =
 android.api = 33
 android.minapi = 24
@@ -23,3 +17,7 @@ android.archs = arm64-v8a, armeabi-v7a
 p4a.branch = master
 p4a.commit = 957a3e5f8c270f7aa648ba185e5a68c1077a798d
 android.ndk = 25b
+
+[buildozer]
+log_level = 2
+warn_on_root = 1
