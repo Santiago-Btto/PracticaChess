@@ -2,6 +2,10 @@
 
 Entorno local completo para jugar ajedrez contra la computadora o en modo Humano vs Humano, con análisis de IA integrado mediante Stockfish. Funciona **100% sin internet** — sin APIs externas ni servicios en la nube. Puedes abrir y jugar **Humano vs Humano sin instalar Stockfish**; el motor solo es necesario para jugar contra la IA, la evaluación y el análisis post-partida.
 
+> **Android:** hay una versión táctil inicial en [`mobile/README.md`](mobile/README.md).
+> Permite jugar localmente desde un APK; la versión de escritorio conserva por
+> ahora las funciones de Stockfish, análisis e importación de capturas.
+
 ---
 
 ## Características
