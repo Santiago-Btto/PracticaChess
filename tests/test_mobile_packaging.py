@@ -21,6 +21,14 @@ def test_github_workflow_builds_and_retains_the_android_apk():
     assert "--sdk_root=" in workflow
 
 
+def test_github_workflow_selects_java_17_for_android_gradle():
+    workflow = Path(".github/workflows/android-apk.yml").read_text(encoding="utf-8")
+
+    assert "actions/setup-java@v4" in workflow
+    assert "java-version: '17'" in workflow
+    assert "distribution: temurin" in workflow
+
+
 def test_android_build_is_pinned_to_the_stable_python_311_toolchain():
     parser = configparser.ConfigParser()
     parser.read("mobile/buildozer.spec", encoding="utf-8")
