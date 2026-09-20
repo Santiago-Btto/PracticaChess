@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import chess
 
-from controller import MobileGameController, display_to_square
+if __package__:
+    from .controller import MobileGameController, display_to_square
+else:  # Buildozer ejecuta main.py como script dentro del APK.
+    from controller import MobileGameController, display_to_square
 
 try:
     from kivy.app import App

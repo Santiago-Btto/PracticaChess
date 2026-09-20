@@ -1,4 +1,5 @@
 import configparser
+import ast
 from pathlib import Path
 
 
@@ -40,3 +41,15 @@ def test_android_build_is_pinned_to_the_stable_python_311_toolchain():
     assert app["android.ndk"] == "25b"
     assert '"buildozer==1.5.0"' in workflow
     assert '"cython==0.29.34"' in workflow
+
+
+def test_mobile_entrypoint_uses_package_relative_imports():
+    """El APK debe poder cargar los módulos incluso cuando se ejecutan como paquete."""
+    app_tree = ast.parse(Path("mobile/app.py").read_text(encoding="utf-8"))
+    main_tree = ast.parse(Path("mobile/main.py").read_text(encoding="utf-8"))
+
+    app_imports = [node for node in ast.walk(app_tree) if isinstance(node, ast.ImportFrom)]
+    main_imports = [node for node in ast.walk(main_tree) if isinstance(node, ast.ImportFrom)]
+
+    assert any(node.module == "controller" and node.level == 1 for node in app_imports)
+    assert any(node.module == "app" and node.level == 1 for node in main_imports)
