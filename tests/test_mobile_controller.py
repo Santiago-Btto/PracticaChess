@@ -47,3 +47,33 @@ def test_display_coordinates_follow_the_selected_orientation():
     assert display_to_square(7, 7, flipped=False) == chess.H1
     assert display_to_square(0, 0, flipped=True) == chess.H1
     assert display_to_square(7, 7, flipped=True) == chess.A8
+
+
+def test_mobile_analysis_exposes_a_legal_orange_arrow_and_evaluation_curve():
+    game = MobileGameController()
+
+    move = game.analysis_move()
+
+    assert move in game.board.legal_moves
+    assert game.evaluation_curve == [0]
+
+    game.tap(move.from_square)
+    game.tap(move.to_square)
+
+    assert len(game.evaluation_curve) == 2
+    assert isinstance(game.evaluation_curve[-1], int)
+
+
+def test_local_analysis_prioritizes_capture_and_undo_restores_the_curve():
+    game = MobileGameController("r3k3/8/8/8/8/8/8/Q3K3 w - - 0 1")
+
+    move = game.analysis_move()
+
+    assert move == chess.Move.from_uci("a1a8")
+    start_curve = game.evaluation_curve[:]
+    game.tap(move.from_square)
+    game.tap(move.to_square)
+    assert game.evaluation_curve[-1] > start_curve[-1]
+
+    assert game.undo() is True
+    assert game.evaluation_curve == start_curve

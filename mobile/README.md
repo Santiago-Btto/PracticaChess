@@ -3,16 +3,17 @@
 Esta carpeta contiene una aplicación táctil independiente de la versión de
 escritorio. La primera versión funciona totalmente sin conexión e incluye:
 
-- Partida local Humano vs Humano.
+- Partida local Humano vs Humano con piezas vectoriales incluidas (no usa los
+  símbolos de ajedrez de la fuente de Android).
 - Movimientos legales, jaque, enroque y promoción automática a dama mediante
   `python-chess`.
-- Selección por toque, casillas legales resaltadas, deshacer, reiniciar y
-  voltear el tablero.
+- Curva de evaluación material, flecha naranja de recomendación local,
+  selección por toque, deshacer, reiniciar y voltear el tablero.
 
-Stockfish, el análisis de IA y la detección de capturas todavía pertenecen a la
-versión de escritorio. Para Android necesitan integración nativa adicional
-(especialmente el binario ARM de Stockfish y permisos de imagen), por lo que no
-se incluyen de forma engañosa en este APK inicial.
+El botón **Análisis** de Android es una recomendación local simple: prioriza
+promociones, capturas, jaques y enroques y la dibuja con una flecha naranja.
+Stockfish y el análisis profundo continúan siendo funciones de escritorio hasta
+integrar un binario ARM nativo.
 
 ## Probar la interfaz en una computadora
 

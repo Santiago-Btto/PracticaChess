@@ -34,6 +34,7 @@ class MobileGameController:
         self.legal_targets: list[chess.Square] = []
         self.san_history: list[str] = []
         self._snapshots: list[chess.Board] = []
+        self.evaluation_curve: list[int] = [self._material_evaluation()]
 
     def tap(self, square: chess.Square) -> TapOutcome:
         """Selecciona una pieza del turno o ejecuta una jugada legal al tocar destino."""
@@ -46,6 +47,7 @@ class MobileGameController:
             self._snapshots.append(self.board.copy(stack=True))
             self.board.push(move)
             self.san_history.append(san)
+            self.evaluation_curve.append(self._material_evaluation())
             self._clear_selection()
             return TapOutcome("moved", san)
 
@@ -62,6 +64,7 @@ class MobileGameController:
             return False
         self.board = self._snapshots.pop()
         self.san_history.pop()
+        self.evaluation_curve.pop()
         self._clear_selection()
         return True
 
@@ -69,7 +72,20 @@ class MobileGameController:
         self.board = chess.Board(self._initial_fen) if self._initial_fen else chess.Board()
         self.san_history = []
         self._snapshots = []
+        self.evaluation_curve = [self._material_evaluation()]
         self._clear_selection()
+
+    def analysis_move(self) -> chess.Move | None:
+        """Devuelve una recomendación legal local, sin motor ni red.
+
+        El APK no empaqueta Stockfish; por eso prioriza de modo determinista
+        promociones, capturas, jaques y enroques. Es suficiente para dibujar
+        una flecha de prueba y nunca propone una jugada ilegal.
+        """
+        moves = list(self.board.legal_moves)
+        if not moves:
+            return None
+        return max(moves, key=lambda move: (self._move_priority(move), move.uci()))
 
     def _select(self, square: chess.Square) -> TapOutcome:
         piece = self.board.piece_at(square)
@@ -92,3 +108,27 @@ class MobileGameController:
     def _clear_selection(self) -> None:
         self.selected_square = None
         self.legal_targets = []
+
+    def _material_evaluation(self) -> int:
+        values = {
+            chess.PAWN: 1,
+            chess.KNIGHT: 3,
+            chess.BISHOP: 3,
+            chess.ROOK: 5,
+            chess.QUEEN: 9,
+            chess.KING: 0,
+        }
+        return 100 * sum(
+            (1 if piece.color == chess.WHITE else -1) * values[piece.piece_type]
+            for piece in self.board.piece_map().values()
+        )
+
+    def _move_priority(self, move: chess.Move) -> int:
+        captured = self.board.piece_at(move.to_square)
+        if captured is None and self.board.is_en_passant(move):
+            captured = chess.Piece(chess.PAWN, not self.board.turn)
+        capture_value = 0 if captured is None else captured.piece_type * 100
+        promotion_value = 0 if move.promotion is None else move.promotion * 100
+        check_bonus = 20 if self.board.gives_check(move) else 0
+        castle_bonus = 10 if self.board.is_castling(move) else 0
+        return capture_value + promotion_value + check_bonus + castle_bonus
