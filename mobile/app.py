@@ -7,8 +7,26 @@ import chess
 
 if __package__:
     from .controller import MobileGameController, display_to_square
+    from .layout import (
+        CONTROLS_HEIGHT,
+        EVALUATION_CURVE_HEIGHT,
+        EVALUATION_LABEL_HEIGHT,
+        OUTER_PADDING,
+        SECTION_SPACING,
+        STATUS_HEIGHT,
+        TITLE_HEIGHT,
+    )
 else:  # Buildozer ejecuta main.py como script dentro del APK.
     from controller import MobileGameController, display_to_square
+    from layout import (
+        CONTROLS_HEIGHT,
+        EVALUATION_CURVE_HEIGHT,
+        EVALUATION_LABEL_HEIGHT,
+        OUTER_PADDING,
+        SECTION_SPACING,
+        STATUS_HEIGHT,
+        TITLE_HEIGHT,
+    )
 
 try:
     from kivy.app import App
@@ -188,24 +206,42 @@ class ChessMobileApp(App):
         self.flipped = False
         self.recommended_move: chess.Move | None = None
 
-        root = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
-        root.add_widget(Label(text="[b]PracticaChess[/b]", markup=True, font_size="26sp", size_hint_y=None, height=dp(42)))
-        self.status = Label(size_hint_y=None, height=dp(28), color=(0.36, 0.42, 0.58, 1))
+        root = BoxLayout(
+            orientation="vertical", padding=dp(OUTER_PADDING), spacing=dp(SECTION_SPACING)
+        )
+        root.add_widget(
+            Label(
+                text="[b]PracticaChess[/b]", markup=True, font_size="24sp",
+                size_hint_y=None, height=dp(TITLE_HEIGHT),
+            )
+        )
+        self.status = Label(
+            size_hint_y=None, height=dp(STATUS_HEIGHT), color=(0.36, 0.42, 0.58, 1)
+        )
         root.add_widget(self.status)
 
-        root.add_widget(Label(text="Evaluación", size_hint_y=None, height=dp(20), color=(0.42, 0.47, 0.61, 1)))
-        self.evaluation = EvaluationCurve(size_hint_y=None, height=dp(58))
+        root.add_widget(
+            Label(
+                text="Evaluación", size_hint_y=None, height=dp(EVALUATION_LABEL_HEIGHT),
+                color=(0.42, 0.47, 0.61, 1),
+            )
+        )
+        self.evaluation = EvaluationCurve(size_hint_y=None, height=dp(EVALUATION_CURVE_HEIGHT))
         root.add_widget(self.evaluation)
 
-        self.board_surface = FloatLayout(size_hint_y=None)
-        self.board_surface.bind(width=self._keep_board_square)
-        self.board_grid = GridLayout(cols=8, spacing=0, size_hint=(1, 1))
+        # La superficie es el único tramo flexible. El tablero se calcula dentro
+        # de ella y queda cuadrado, sin desplazar ni cubrir los controles.
+        self.board_surface = FloatLayout(size_hint_y=1)
+        self.board_surface.bind(pos=self._layout_board, size=self._layout_board)
+        self.board_grid = GridLayout(cols=8, spacing=0, size_hint=(None, None))
         self.board_surface.add_widget(self.board_grid)
-        self.arrow = MoveArrow(size_hint=(1, 1))
+        self.arrow = MoveArrow(size_hint=(None, None))
         self.board_surface.add_widget(self.arrow)
         root.add_widget(self.board_surface)
 
-        controls = GridLayout(cols=2, size_hint_y=None, height=dp(104), spacing=dp(6))
+        controls = GridLayout(
+            cols=2, size_hint_y=None, height=dp(CONTROLS_HEIGHT), spacing=dp(SECTION_SPACING)
+        )
         controls.add_widget(self._control_button("Voltear", self._flip))
         controls.add_widget(self._control_button("Deshacer", self._undo))
         controls.add_widget(self._control_button("Reiniciar", self._reset))
@@ -214,8 +250,15 @@ class ChessMobileApp(App):
         self._redraw()
         return root
 
-    def _keep_board_square(self, _surface, width: float) -> None:
-        self.board_surface.height = width
+    def _layout_board(self, *_args) -> None:
+        """Ubica el tablero completo al inicio de su área flexible."""
+        side = min(self.board_surface.width, self.board_surface.height)
+        x = self.board_surface.x + (self.board_surface.width - side) / 2
+        y = self.board_surface.top - side
+        self.board_grid.pos = (x, y)
+        self.board_grid.size = (side, side)
+        self.arrow.pos = (x, y)
+        self.arrow.size = (side, side)
 
     def _control_button(self, text: str, callback) -> Button:
         button = Button(text=text, background_normal="", background_color=(0.18, 0.40, 0.72, 1))
