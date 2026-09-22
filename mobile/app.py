@@ -160,7 +160,6 @@ class ChessMobileApp(App):
     def build(self):
         self.controller = MobileGameController()
         self.flipped = False
-        self.recommended_move: chess.Move | None = None
 
         root = BoxLayout(
             orientation="vertical", padding=dp(OUTER_PADDING), spacing=dp(SECTION_SPACING)
@@ -201,7 +200,9 @@ class ChessMobileApp(App):
         controls.add_widget(self._control_button("Voltear", self._flip))
         controls.add_widget(self._control_button("Deshacer", self._undo))
         controls.add_widget(self._control_button("Reiniciar", self._reset))
-        controls.add_widget(self._control_button("Análisis", self._analyse))
+        controls.add_widget(
+            Label(text="Análisis automático", color=(0.42, 0.70, 0.95, 1))
+        )
         root.add_widget(controls)
         self._redraw()
         return root
@@ -222,27 +223,20 @@ class ChessMobileApp(App):
         return button
 
     def _tap_square(self, square: chess.Square) -> None:
-        outcome = self.controller.tap(square)
-        if outcome.kind == "moved":
-            self.recommended_move = None
+        self.controller.tap(square)
         self._redraw()
 
     def _undo(self, _button) -> None:
         self.controller.undo()
-        self.recommended_move = None
         self._redraw()
 
     def _flip(self, _button) -> None:
         self.flipped = not self.flipped
+        self.controller.refresh_analysis()
         self._redraw()
 
     def _reset(self, _button) -> None:
         self.controller.reset()
-        self.recommended_move = None
-        self._redraw()
-
-    def _analyse(self, _button) -> None:
-        self.recommended_move = self.controller.analysis_move()
         self._redraw()
 
     def _redraw(self) -> None:
@@ -268,11 +262,13 @@ class ChessMobileApp(App):
                 self.board_grid.add_widget(button)
 
         self.evaluation.set_values(self.controller.evaluation_curve)
-        self.arrow.set_move(self.recommended_move, self.flipped)
+        self.arrow.set_move(self.controller.recommended_move, self.flipped)
         turn = "Blancas" if self.controller.board.turn == chess.WHITE else "Negras"
         if self.controller.board.is_game_over(claim_draw=True):
             self.status.text = f"Partida terminada: {self.controller.board.result(claim_draw=True)}"
-        elif self.recommended_move:
-            self.status.text = f"Análisis local: {self.recommended_move.uci()}"
+        elif self.controller.recommended_move:
+            self.status.text = (
+                f"Turno: {turn} · sugerencia: {self.controller.recommended_move.uci()}"
+            )
         else:
             self.status.text = f"Turno: {turn} · toca una pieza y luego su destino"

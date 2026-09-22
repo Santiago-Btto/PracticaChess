@@ -7,13 +7,17 @@ escritorio. La primera versión funciona totalmente sin conexión e incluye:
   los símbolos de ajedrez de la fuente de Android).
 - Movimientos legales, jaque, enroque y promoción automática a dama mediante
   `python-chess`.
-- Curva de evaluación material, flecha naranja de recomendación local,
+- Curva de evaluación material, flecha naranja de recomendación local automática,
   selección por toque, deshacer, reiniciar y voltear el tablero.
 
-El botón **Análisis** de Android evalúa exclusivamente jugadas legales sin red
-ni Stockfish. Considera material, capturas, seguridad de la pieza en destino,
-jaques, enroques y movilidad del rival; luego dibuja la recomendación con una
-flecha naranja. Es una guía local reproducible, no análisis profundo.
+El análisis de Android está siempre activo: se actualiza al abrir la partida y
+después de cada jugada, deshacer, reiniciar o voltear. Por eso no hay un botón
+que deba tocarse; el indicador **Análisis automático** deja claro ese estado.
+Evalúa exclusivamente jugadas legales sin red ni Stockfish. Prioriza mates,
+evita permitir mate inmediato, y considera material, capturas, seguridad de la
+pieza en destino, jaques, promociones, enroques y movilidad del rival; luego
+dibuja la recomendación con una flecha naranja. Es una guía local reproducible,
+no análisis profundo.
 
 ### Créditos de piezas
 

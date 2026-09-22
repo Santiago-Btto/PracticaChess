@@ -14,6 +14,7 @@ PIECE_VALUES = {
     chess.QUEEN: 900,
     chess.KING: 0,
 }
+MATE_SCORE = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,8 @@ class MobileGameController:
         self.san_history: list[str] = []
         self._snapshots: list[chess.Board] = []
         self.evaluation_curve: list[int] = [self._material_evaluation()]
+        self.recommended_move: chess.Move | None = None
+        self.refresh_analysis()
 
     def tap(self, square: chess.Square) -> TapOutcome:
         """Selecciona una pieza del turno o ejecuta una jugada legal al tocar destino."""
@@ -59,6 +62,7 @@ class MobileGameController:
             self.san_history.append(san)
             self.evaluation_curve.append(self._material_evaluation())
             self._clear_selection()
+            self.refresh_analysis()
             return TapOutcome("moved", san)
 
         piece = self.board.piece_at(square)
@@ -76,6 +80,7 @@ class MobileGameController:
         self.san_history.pop()
         self.evaluation_curve.pop()
         self._clear_selection()
+        self.refresh_analysis()
         return True
 
     def reset(self) -> None:
@@ -84,6 +89,12 @@ class MobileGameController:
         self._snapshots = []
         self.evaluation_curve = [self._material_evaluation()]
         self._clear_selection()
+        self.refresh_analysis()
+
+    def refresh_analysis(self) -> chess.Move | None:
+        """Recalcula la sugerencia local para que la interfaz nunca quede obsoleta."""
+        self.recommended_move = self.analysis_move()
+        return self.recommended_move
 
     def analysis_move(self) -> chess.Move | None:
         """Elige la mejor jugada legal con una evaluación local reproducible.
@@ -104,16 +115,22 @@ class MobileGameController:
             raise ValueError("El análisis solo puede puntuar jugadas legales")
 
         mover_color = self.board.turn
-        moving_piece = self.board.piece_at(move.from_square)
-        assert moving_piece is not None  # garantizado por ``legal_moves``
         captured_value = self._captured_value(move)
 
         position_after = self.board.copy(stack=False)
         position_after.push(move)
+        if position_after.is_checkmate():
+            return MATE_SCORE
+        if self._opponent_has_mate_in_one(position_after):
+            return -MATE_SCORE
+
+        moved_piece = position_after.piece_at(move.to_square)
+        assert moved_piece is not None  # garantizado por ``legal_moves``
 
         material = self._material_for(position_after, mover_color)
-        safety = self._destination_safety(position_after, move.to_square, mover_color, moving_piece)
+        safety = self._destination_safety(position_after, move.to_square, mover_color, moved_piece)
         opponent_mobility = sum(1 for _ in position_after.legal_moves)
+        reply_risk = self._opponent_reply_risk(position_after)
         check_bonus = 35 if position_after.is_check() else 0
         castle_bonus = 30 if self.board.is_castling(move) else 0
         promotion_bonus = (
@@ -133,6 +150,7 @@ class MobileGameController:
             + check_bonus
             + castle_bonus
             - opponent_mobility * 2
+            - reply_risk
         )
 
     def _select(self, square: chess.Square) -> TapOutcome:
@@ -171,10 +189,37 @@ class MobileGameController:
         )
 
     def _captured_value(self, move: chess.Move) -> int:
-        captured = self.board.piece_at(move.to_square)
-        if captured is None and self.board.is_en_passant(move):
-            captured = chess.Piece(chess.PAWN, not self.board.turn)
+        return self._captured_value_on(self.board, move)
+
+    @staticmethod
+    def _captured_value_on(board: chess.Board, move: chess.Move) -> int:
+        captured = board.piece_at(move.to_square)
+        if captured is None and board.is_en_passant(move):
+            captured = chess.Piece(chess.PAWN, not board.turn)
         return 0 if captured is None else PIECE_VALUES[captured.piece_type]
+
+    @staticmethod
+    def _opponent_has_mate_in_one(position: chess.Board) -> bool:
+        """Evita una sugerencia que permita mate inmediato al rival."""
+        for reply in position.legal_moves:
+            after_reply = position.copy(stack=False)
+            after_reply.push(reply)
+            if after_reply.is_checkmate():
+                return True
+        return False
+
+    @classmethod
+    def _opponent_reply_risk(cls, position: chess.Board) -> int:
+        """Descuenta capturas y jaques disponibles para el rival en la réplica."""
+        best_risk = 0
+        for reply in position.legal_moves:
+            risk = cls._captured_value_on(position, reply) // 5
+            after_reply = position.copy(stack=False)
+            after_reply.push(reply)
+            if after_reply.is_check():
+                risk += 25
+            best_risk = max(best_risk, risk)
+        return best_risk
 
     @staticmethod
     def _destination_safety(

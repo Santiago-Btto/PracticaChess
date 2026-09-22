@@ -69,7 +69,7 @@ def test_mobile_entrypoint_uses_package_relative_imports():
     assert any(node.module == "app" and node.level == 1 for node in main_imports)
 
 
-def test_mobile_ui_uses_drawn_piece_assets_and_only_the_requested_controls():
+def test_mobile_ui_uses_drawn_piece_assets_and_an_automatic_analysis_indicator():
     """Android no debe depender de los glifos de ajedrez de la fuente del sistema."""
     app_source = Path("mobile/app.py").read_text(encoding="utf-8")
 
@@ -78,8 +78,10 @@ def test_mobile_ui_uses_drawn_piece_assets_and_only_the_requested_controls():
     assert "♔" not in app_source
     assert "class EvaluationCurve" in app_source
     assert "class MoveArrow" in app_source
-    for label in ("Voltear", "Deshacer", "Reiniciar", "Análisis"):
+    for label in ("Voltear", "Deshacer", "Reiniciar", "Análisis automático"):
         assert f'"{label}"' in app_source
+    assert "self._analyse" not in app_source
+    assert "self.controller.refresh_analysis()" in app_source
 
 
 def test_mobile_ui_packages_a_complete_local_chess_piece_set():

@@ -64,6 +64,42 @@ def test_mobile_analysis_exposes_a_legal_orange_arrow_and_evaluation_curve():
     assert isinstance(game.evaluation_curve[-1], int)
 
 
+def test_mobile_analysis_is_available_immediately_and_refreshes_after_game_lifecycle():
+    game = MobileGameController()
+
+    assert game.recommended_move in game.board.legal_moves
+
+    game.tap(chess.E2)
+    game.tap(chess.E4)
+    assert game.recommended_move in game.board.legal_moves
+
+    assert game.undo() is True
+    assert game.recommended_move in game.board.legal_moves
+
+    game.reset()
+    assert game.recommended_move in game.board.legal_moves
+
+
+def test_mobile_analysis_prioritizes_a_forced_checkmate_over_material():
+    game = MobileGameController("7k/5Q2/6K1/8/8/8/8/8 w - - 0 1")
+
+    move = game.analysis_move()
+    after_move = game.board.copy(stack=False)
+    after_move.push(move)
+
+    assert after_move.is_checkmate()
+
+
+def test_mobile_analysis_avoids_a_move_that_allows_mate_in_one():
+    game = MobileGameController(
+        "rn2k3/3p4/p1p3P1/1p2p1B1/PP1qP1Qr/3P3p/2PR1PB1/2KR2N1 b - - 2 32"
+    )
+
+    move = game.analysis_move()
+
+    assert move not in {chess.Move.from_uci("d7d6"), chess.Move.from_uci("d7d5")}
+
+
 def test_local_analysis_prioritizes_capture_and_undo_restores_the_curve():
     game = MobileGameController("r3k3/8/8/8/8/8/8/Q3K3 w - - 0 1")
 
