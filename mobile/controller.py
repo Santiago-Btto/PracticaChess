@@ -15,6 +15,72 @@ PIECE_VALUES = {
     chess.KING: 0,
 }
 MATE_SCORE = 1_000_000
+SEARCH_DEPTH = 2
+ANALYSIS_LIMITATION = (
+    "Análisis local: libro de aperturas pequeño y búsqueda breve; no sustituye a Stockfish."
+)
+
+
+def _position_key(board: chess.Board) -> tuple[str, chess.Color, int, chess.Square | None]:
+    """Clave de una posición de libro, sin depender de su contador de jugadas."""
+    return (
+        board.board_fen(),
+        board.turn,
+        int(board.clean_castling_rights()),
+        board.ep_square,
+    )
+
+
+def _build_opening_book() -> dict[tuple[str, chess.Color, int, chess.Square | None], str]:
+    """Construye un libro local deliberadamente pequeño de posiciones exactas.
+
+    Cada fila contiene las jugadas que deben haberse alcanzado y la única
+    continuación que sugerimos. No se hacen inferencias de nombres de apertura:
+    fuera de estas posiciones exactas se usa la búsqueda local.
+    """
+    lines = (
+        ((), "e2e4"),
+        (("e2e4",), "e7e5"),
+        (("e2e4", "e7e5"), "g1f3"),
+        (("e2e4", "e7e5", "g1f3"), "b8c6"),
+        (("e2e4", "e7e5", "g1f3", "b8c6"), "f1b5"),  # Ruy López
+        (("e2e4", "e7e5", "g1f3", "b8c6", "f1b5"), "a7a6"),
+        (("e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6"), "b5a4"),
+        (("e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4"), "g8f6"),
+        (("e2e4", "c7c5"), "g1f3"),  # Siciliana
+        (("e2e4", "c7c5", "g1f3"), "d7d6"),
+        (("e2e4", "c7c5", "g1f3", "d7d6"), "d2d4"),
+        (("e2e4", "c7c5", "g1f3", "d7d6", "d2d4"), "c5d4"),
+        (("e2e4", "e7e6"), "d2d4"),  # Francesa
+        (("e2e4", "e7e6", "d2d4"), "d7d5"),
+        (("e2e4", "c7c6"), "d2d4"),  # Caro-Kann
+        (("e2e4", "c7c6", "d2d4"), "d7d5"),
+        (("d2d4",), "d7d5"),
+        (("d2d4", "d7d5"), "c2c4"),  # Gambito de Dama
+        (("d2d4", "d7d5", "c2c4"), "e7e6"),
+        (("d2d4", "g8f6"), "c2c4"),  # India de Rey
+        (("d2d4", "g8f6", "c2c4"), "g7g6"),
+        (("d2d4", "g8f6", "c2c4", "g7g6"), "b1c3"),
+        (("d2d4", "g8f6", "c2c4", "g7g6", "b1c3"), "f8g7"),
+        (("d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "f8g7"), "e2e4"),
+        (("d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "f8g7", "e2e4"), "d7d6"),
+    )
+    book: dict[tuple[str, chess.Color, int, chess.Square | None], str] = {}
+    for moves, recommended_uci in lines:
+        board = chess.Board()
+        for uci in moves:
+            move = chess.Move.from_uci(uci)
+            if move not in board.legal_moves:
+                raise RuntimeError(f"Línea de apertura inválida: {uci}")
+            board.push(move)
+        recommended = chess.Move.from_uci(recommended_uci)
+        if recommended not in board.legal_moves:
+            raise RuntimeError(f"Recomendación de apertura inválida: {recommended_uci}")
+        book[_position_key(board)] = recommended_uci
+    return book
+
+
+OPENING_BOOK = _build_opening_book()
 
 
 @dataclass(frozen=True)
@@ -47,6 +113,7 @@ class MobileGameController:
         self._snapshots: list[chess.Board] = []
         self.evaluation_curve: list[int] = [self._material_evaluation()]
         self.recommended_move: chess.Move | None = None
+        self.analysis_source = "search"
         self.refresh_analysis()
 
     def tap(self, square: chess.Square) -> TapOutcome:
@@ -97,17 +164,144 @@ class MobileGameController:
         return self.recommended_move
 
     def analysis_move(self) -> chess.Move | None:
-        """Elige la mejor jugada legal con una evaluación local reproducible.
+        """Sugiere una jugada legal con libro exacto o búsqueda local breve.
 
-        No intenta sustituir a un motor: pondera material, capturas seguras,
-        amenazas al destino, jaque/enroque y movilidad del rival. La jugada se
-        simula en una copia, por lo que la flecha nunca puede señalar algo
-        ilegal ni alterar la partida activa.
+        El libro evita recomendar aperturas inventadas: solo interviene en una
+        posición estándar idéntica. El resto usa negamax a dos plies con una
+        evaluación posicional ligera, por lo que sigue siendo una guía local y
+        no pretende sustituir a Stockfish.
         """
         moves = list(self.board.legal_moves)
         if not moves:
+            self.analysis_source = "search"
             return None
-        return max(moves, key=lambda move: (self.analysis_score(move), move.uci()))
+
+        book_move = self._book_move()
+        if book_move is not None:
+            self.analysis_source = "book"
+            return book_move
+
+        self.analysis_source = "search"
+        return self._search_best_move(moves)
+
+    def _book_move(self) -> chess.Move | None:
+        recommended_uci = OPENING_BOOK.get(_position_key(self.board))
+        if recommended_uci is None:
+            return None
+        move = chess.Move.from_uci(recommended_uci)
+        return move if move in self.board.legal_moves else None
+
+    def _search_best_move(self, moves: list[chess.Move]) -> chess.Move:
+        """Negamax corto: suficiente para réplicas inmediatas sin bloquear la UI."""
+        best_move: chess.Move | None = None
+        best_score = -MATE_SCORE * 2
+        for move in self._ordered_moves(self.board, moves):
+            self.board.push(move)
+            score = -self._negamax(self.board, SEARCH_DEPTH - 1, -MATE_SCORE * 2, MATE_SCORE * 2)
+            self.board.pop()
+            score += self._early_move_penalty(move)
+            if best_move is None or (score, move.uci()) > (best_score, best_move.uci()):
+                best_score = score
+                best_move = move
+        assert best_move is not None
+        return best_move
+
+    @classmethod
+    def _negamax(cls, board: chess.Board, depth: int, alpha: int, beta: int) -> int:
+        if board.is_checkmate():
+            return -MATE_SCORE - depth
+        if board.is_stalemate() or board.is_insufficient_material():
+            return 0
+        if depth == 0:
+            return cls._positional_evaluation(board, board.turn)
+
+        best_score = -MATE_SCORE * 2
+        for move in cls._ordered_moves(board, list(board.legal_moves)):
+            board.push(move)
+            score = -cls._negamax(board, depth - 1, -beta, -alpha)
+            board.pop()
+            best_score = max(best_score, score)
+            alpha = max(alpha, score)
+            if alpha >= beta:
+                break
+        return best_score
+
+    @classmethod
+    def _ordered_moves(cls, board: chess.Board, moves: list[chess.Move]) -> list[chess.Move]:
+        """Explora primero capturas y promociones para que la poda sea barata."""
+        return sorted(
+            moves,
+            key=lambda move: (
+                cls._captured_value_on(board, move),
+                PIECE_VALUES.get(move.promotion, 0),
+                board.gives_check(move),
+                move.uci(),
+            ),
+            reverse=True,
+        )
+
+    def _early_move_penalty(self, move: chess.Move) -> int:
+        """Evita hábitos de apertura poco sanos sin restringir jugadas legales."""
+        if self.board.fullmove_number > 8:
+            return 0
+        piece = self.board.piece_at(move.from_square)
+        if piece is None:
+            return 0
+
+        penalty = 0
+        if piece.piece_type == chess.QUEEN:
+            penalty -= 45
+        if any(previous.to_square == move.from_square for previous in self.board.move_stack[-6:]):
+            penalty -= 24
+        return penalty
+
+    @classmethod
+    def _positional_evaluation(cls, board: chess.Board, color: chess.Color) -> int:
+        """Evalúa material y principios básicos, siempre desde ``color``."""
+        opponent = not color
+        score = cls._material_for(board, color)
+
+        center = (chess.D4, chess.E4, chess.D5, chess.E5)
+        for square in center:
+            score += 5 * (
+                len(board.attackers(color, square)) - len(board.attackers(opponent, square))
+            )
+            occupant = board.piece_at(square)
+            if occupant and occupant.color == color:
+                score += 12
+            elif occupant and occupant.color == opponent:
+                score -= 12
+
+        score += cls._development_score(board, color) - cls._development_score(board, opponent)
+        score += cls._king_safety_score(board, color) - cls._king_safety_score(board, opponent)
+        score += cls._early_queen_score(board, color) - cls._early_queen_score(board, opponent)
+        return score
+
+    @staticmethod
+    def _development_score(board: chess.Board, color: chess.Color) -> int:
+        home_squares = (chess.B1, chess.G1, chess.C1, chess.F1) if color else (
+            chess.B8, chess.G8, chess.C8, chess.F8
+        )
+        developed = 0
+        for square in board.pieces(chess.KNIGHT, color) | board.pieces(chess.BISHOP, color):
+            if square not in home_squares:
+                developed += 11
+        return developed
+
+    @staticmethod
+    def _king_safety_score(board: chess.Board, color: chess.Color) -> int:
+        king_square = board.king(color)
+        if king_square in ((chess.G1, chess.C1) if color else (chess.G8, chess.C8)):
+            return 35
+        return 0
+
+    @staticmethod
+    def _early_queen_score(board: chess.Board, color: chess.Color) -> int:
+        if board.fullmove_number > 8:
+            return 0
+        queens = board.pieces(chess.QUEEN, color)
+        home_square = chess.D1 if color else chess.D8
+        return -35 if queens and home_square not in queens else 0
 
     def analysis_score(self, move: chess.Move) -> int:
         """Puntúa una jugada legal desde el punto de vista del bando que mueve."""

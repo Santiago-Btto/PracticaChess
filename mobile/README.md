@@ -13,11 +13,14 @@ escritorio. La primera versión funciona totalmente sin conexión e incluye:
 El análisis de Android está siempre activo: se actualiza al abrir la partida y
 después de cada jugada, deshacer, reiniciar o voltear. Por eso no hay un botón
 que deba tocarse; el indicador **Análisis automático** deja claro ese estado.
-Evalúa exclusivamente jugadas legales sin red ni Stockfish. Prioriza mates,
-evita permitir mate inmediato, y considera material, capturas, seguridad de la
-pieza en destino, jaques, promociones, enroques y movilidad del rival; luego
-dibuja la recomendación con una flecha naranja. Es una guía local reproducible,
-no análisis profundo.
+Evalúa exclusivamente jugadas legales sin red ni Stockfish. Usa un libro local
+pequeño únicamente cuando la posición coincide exactamente con una línea
+estándar (Española, Siciliana, Francesa, Caro-Kann, Gambito de Dama o India de
+Rey). Fuera del libro realiza una búsqueda negamax corta y considera material,
+capturas, desarrollo, control del centro, seguridad del rey, jaques,
+promociones y enroques; luego dibuja la recomendación con una flecha naranja.
+Es una guía local reproducible, no un análisis profundo ni un reemplazo de
+Stockfish.
 
 ### Créditos de piezas
 

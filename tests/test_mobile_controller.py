@@ -1,4 +1,5 @@
 import chess
+import pytest
 
 from mobile.controller import MobileGameController, display_to_square
 
@@ -78,6 +79,55 @@ def test_mobile_analysis_is_available_immediately_and_refreshes_after_game_lifec
 
     game.reset()
     assert game.recommended_move in game.board.legal_moves
+
+
+def test_mobile_analysis_uses_an_exact_local_opening_book_for_standard_lines():
+    game = MobileGameController()
+
+    assert game.analysis_move() == chess.Move.from_uci("e2e4")
+    assert game.analysis_source == "book"
+
+    game.tap(chess.E2)
+    game.tap(chess.E4)
+    assert game.analysis_move() == chess.Move.from_uci("e7e5")
+    assert game.analysis_source == "book"
+
+    sicilian = MobileGameController()
+    for uci in ("e2e4", "c7c5"):
+        sicilian.tap(chess.Move.from_uci(uci).from_square)
+        sicilian.tap(chess.Move.from_uci(uci).to_square)
+    assert sicilian.analysis_move() == chess.Move.from_uci("g1f3")
+    assert sicilian.analysis_source == "book"
+
+
+def test_mobile_analysis_falls_back_to_search_outside_the_exact_opening_book():
+    game = MobileGameController()
+    game.tap(chess.A2)
+    game.tap(chess.A3)
+
+    move = game.analysis_move()
+
+    assert move in game.board.legal_moves
+    assert game.analysis_source == "search"
+
+
+@pytest.mark.parametrize(
+    ("played_moves", "expected"),
+    [
+        (("e2e4", "e7e6"), "d2d4"),  # Francesa
+        (("d2d4", "d7d5", "c2c4"), "e7e6"),  # Gambito de Dama
+        (("d2d4", "g8f6", "c2c4"), "g7g6"),  # India de Rey
+    ],
+)
+def test_mobile_opening_book_covers_other_standard_exact_positions(played_moves, expected):
+    game = MobileGameController()
+    for uci in played_moves:
+        move = chess.Move.from_uci(uci)
+        game.tap(move.from_square)
+        game.tap(move.to_square)
+
+    assert game.analysis_move() == chess.Move.from_uci(expected)
+    assert game.analysis_source == "book"
 
 
 def test_mobile_analysis_prioritizes_a_forced_checkmate_over_material():
