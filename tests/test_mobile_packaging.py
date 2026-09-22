@@ -80,3 +80,28 @@ def test_mobile_ui_uses_drawn_piece_assets_and_only_the_requested_controls():
     assert "class MoveArrow" in app_source
     for label in ("Voltear", "Deshacer", "Reiniciar", "Análisis"):
         assert f'"{label}"' in app_source
+
+
+def test_mobile_ui_packages_a_complete_local_chess_piece_set():
+    """Las piezas de Android deben ser assets locales, no glifos del sistema."""
+    asset_dir = Path("mobile/assets/pieces")
+    expected_names = {
+        f"{color}{piece}.png"
+        for color in ("w", "b")
+        for piece in ("P", "N", "B", "R", "Q", "K")
+    }
+
+    assert asset_dir.is_dir()
+    assert {path.name for path in asset_dir.glob("*.png")} == expected_names
+
+    app_source = Path("mobile/app.py").read_text(encoding="utf-8")
+    assert "assets/pieces" in app_source
+
+
+def test_android_package_keeps_piece_sources_and_their_attribution():
+    spec = Path("mobile/buildozer.spec").read_text(encoding="utf-8")
+    license_text = Path("mobile/assets/pieces/LICENSE.md").read_text(encoding="utf-8")
+
+    assert "svg" in spec
+    assert "Cburnett" in license_text
+    assert "CC BY-SA 3.0" in license_text

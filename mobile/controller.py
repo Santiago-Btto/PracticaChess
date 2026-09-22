@@ -6,6 +6,16 @@ from dataclasses import dataclass
 import chess
 
 
+PIECE_VALUES = {
+    chess.PAWN: 100,
+    chess.KNIGHT: 320,
+    chess.BISHOP: 330,
+    chess.ROOK: 500,
+    chess.QUEEN: 900,
+    chess.KING: 0,
+}
+
+
 @dataclass(frozen=True)
 class TapOutcome:
     """Resultado de tocar una casilla en la interfaz móvil."""
@@ -76,16 +86,54 @@ class MobileGameController:
         self._clear_selection()
 
     def analysis_move(self) -> chess.Move | None:
-        """Devuelve una recomendación legal local, sin motor ni red.
+        """Elige la mejor jugada legal con una evaluación local reproducible.
 
-        El APK no empaqueta Stockfish; por eso prioriza de modo determinista
-        promociones, capturas, jaques y enroques. Es suficiente para dibujar
-        una flecha de prueba y nunca propone una jugada ilegal.
+        No intenta sustituir a un motor: pondera material, capturas seguras,
+        amenazas al destino, jaque/enroque y movilidad del rival. La jugada se
+        simula en una copia, por lo que la flecha nunca puede señalar algo
+        ilegal ni alterar la partida activa.
         """
         moves = list(self.board.legal_moves)
         if not moves:
             return None
-        return max(moves, key=lambda move: (self._move_priority(move), move.uci()))
+        return max(moves, key=lambda move: (self.analysis_score(move), move.uci()))
+
+    def analysis_score(self, move: chess.Move) -> int:
+        """Puntúa una jugada legal desde el punto de vista del bando que mueve."""
+        if move not in self.board.legal_moves:
+            raise ValueError("El análisis solo puede puntuar jugadas legales")
+
+        mover_color = self.board.turn
+        moving_piece = self.board.piece_at(move.from_square)
+        assert moving_piece is not None  # garantizado por ``legal_moves``
+        captured_value = self._captured_value(move)
+
+        position_after = self.board.copy(stack=False)
+        position_after.push(move)
+
+        material = self._material_for(position_after, mover_color)
+        safety = self._destination_safety(position_after, move.to_square, mover_color, moving_piece)
+        opponent_mobility = sum(1 for _ in position_after.legal_moves)
+        check_bonus = 35 if position_after.is_check() else 0
+        castle_bonus = 30 if self.board.is_castling(move) else 0
+        promotion_bonus = (
+            PIECE_VALUES[move.promotion] - PIECE_VALUES[chess.PAWN]
+            if move.promotion is not None
+            else 0
+        )
+
+        # El material ya incluye el valor de una captura. Este pequeño extra
+        # rompe empates a favor de tomar una pieza sin convertir la IA en una
+        # máquina de sacrificios.
+        return (
+            material
+            + captured_value // 8
+            + promotion_bonus
+            + safety
+            + check_bonus
+            + castle_bonus
+            - opponent_mobility * 2
+        )
 
     def _select(self, square: chess.Square) -> TapOutcome:
         piece = self.board.piece_at(square)
@@ -110,25 +158,47 @@ class MobileGameController:
         self.legal_targets = []
 
     def _material_evaluation(self) -> int:
-        values = {
-            chess.PAWN: 1,
-            chess.KNIGHT: 3,
-            chess.BISHOP: 3,
-            chess.ROOK: 5,
-            chess.QUEEN: 9,
-            chess.KING: 0,
-        }
         return 100 * sum(
-            (1 if piece.color == chess.WHITE else -1) * values[piece.piece_type]
+            (1 if piece.color == chess.WHITE else -1) * (PIECE_VALUES[piece.piece_type] // 100)
             for piece in self.board.piece_map().values()
         )
 
-    def _move_priority(self, move: chess.Move) -> int:
+    @staticmethod
+    def _material_for(board: chess.Board, color: chess.Color) -> int:
+        return sum(
+            (1 if piece.color == color else -1) * PIECE_VALUES[piece.piece_type]
+            for piece in board.piece_map().values()
+        )
+
+    def _captured_value(self, move: chess.Move) -> int:
         captured = self.board.piece_at(move.to_square)
         if captured is None and self.board.is_en_passant(move):
             captured = chess.Piece(chess.PAWN, not self.board.turn)
-        capture_value = 0 if captured is None else captured.piece_type * 100
-        promotion_value = 0 if move.promotion is None else move.promotion * 100
-        check_bonus = 20 if self.board.gives_check(move) else 0
-        castle_bonus = 10 if self.board.is_castling(move) else 0
-        return capture_value + promotion_value + check_bonus + castle_bonus
+        return 0 if captured is None else PIECE_VALUES[captured.piece_type]
+
+    @staticmethod
+    def _destination_safety(
+        board: chess.Board,
+        square: chess.Square,
+        mover_color: chess.Color,
+        moving_piece: chess.Piece,
+    ) -> int:
+        """Penaliza dejar una pieza valiosa atacada tras moverla.
+
+        Es una aproximación conservadora al intercambio estático: tomar una
+        torre con la dama no es buena si el rey o un peón puede capturarla al
+        instante. Una pieza defendida conserva una bonificación menor.
+        """
+        attackers = board.attackers(not mover_color, square)
+        if not attackers:
+            return 12 if board.attackers(mover_color, square) else 0
+
+        attacker_values = [
+            PIECE_VALUES[board.piece_at(attacker).piece_type]
+            for attacker in attackers
+            if board.piece_at(attacker) is not None
+        ]
+        cheapest_attacker = min(attacker_values, default=0)
+        loss_risk = max(0, PIECE_VALUES[moving_piece.piece_type] - cheapest_attacker)
+        support_bonus = 20 if board.attackers(mover_color, square) else 0
+        return support_bonus - loss_risk

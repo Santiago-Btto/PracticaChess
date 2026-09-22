@@ -3,7 +3,7 @@ title = PracticaChess
 package.name = practicachess
 package.domain = com.santiagobtto
 source.dir = .
-source.include_exts = py,png,jpg,jpeg,kv,atlas,ttf
+source.include_exts = py,png,jpg,jpeg,svg,kv,atlas,ttf
 version = 0.1.0
 # ``chess`` es el paquete que provee ``import chess``. Declararlo directamente
 # evita que python-for-android omita la dependencia transitiva del metapaquete

@@ -77,3 +77,21 @@ def test_local_analysis_prioritizes_capture_and_undo_restores_the_curve():
 
     assert game.undo() is True
     assert game.evaluation_curve == start_curve
+
+
+def test_local_analysis_prefers_a_safe_capture_over_a_quiet_move():
+    game = MobileGameController("4k3/8/8/8/8/8/3p4/K2Q4 w - - 0 1")
+
+    move = game.analysis_move()
+
+    assert move == chess.Move.from_uci("d1d2")
+    assert move in game.board.legal_moves
+
+
+def test_local_analysis_avoids_a_capture_that_loses_the_queen_to_the_king():
+    game = MobileGameController("1k6/r7/8/8/8/8/8/Q3K3 w - - 0 1")
+
+    move = game.analysis_move()
+
+    assert move in game.board.legal_moves
+    assert move != chess.Move.from_uci("a1a8")

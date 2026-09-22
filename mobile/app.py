@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import chess
 
@@ -30,12 +31,13 @@ else:  # Buildozer ejecuta main.py como script dentro del APK.
 
 try:
     from kivy.app import App
-    from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle, Triangle
+    from kivy.graphics import Color, Ellipse, Line, RoundedRectangle, Triangle
     from kivy.metrics import dp
     from kivy.uix.boxlayout import BoxLayout
     from kivy.uix.button import Button
     from kivy.uix.floatlayout import FloatLayout
     from kivy.uix.gridlayout import GridLayout
+    from kivy.uix.image import Image
     from kivy.uix.label import Label
     from kivy.uix.widget import Widget
 except ModuleNotFoundError as exc:  # permite usar la lógica sin instalar Kivy
@@ -50,74 +52,28 @@ DARK_SQUARE = (0.47, 0.60, 0.31, 1)
 SELECTED_SQUARE = (0.95, 0.74, 0.22, 1)
 LEGAL_TARGET = (0.67, 0.81, 0.40, 1)
 ORANGE = (0.95, 0.48, 0.04, 0.88)
+PIECE_ASSET_DIRECTORY = Path(__file__).resolve().parent / "assets/pieces"
 
 
-class PieceWidget(Widget):
-    """Pieza vectorial local: no depende de los glifos Unicode de Android."""
+def piece_asset_path(piece: chess.Piece) -> str:
+    """Devuelve la imagen local de la pieza, incluida dentro del APK."""
+    color = "w" if piece.color == chess.WHITE else "b"
+    letter = piece.symbol().upper()
+    return str(PIECE_ASSET_DIRECTORY / f"{color}{letter}.png")
+
+
+class PieceWidget(Image):
+    """Pieza Cburnett local, legible y sin depender de glifos Android."""
 
     def __init__(self, piece: chess.Piece, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(
+            source=piece_asset_path(piece),
+            allow_stretch=True,
+            keep_ratio=True,
+            mipmap=True,
+            **kwargs,
+        )
         self.piece = piece
-        self.bind(pos=self._draw, size=self._draw)
-
-    def _draw(self, *_args) -> None:
-        self.canvas.clear()
-        if self.piece is None or self.width <= 0 or self.height <= 0:
-            return
-        x, y = self.x, self.y
-        width, height = self.width, self.height
-        fill = (0.96, 0.96, 0.93, 1) if self.piece.color else (0.16, 0.16, 0.15, 1)
-        outline = (0.10, 0.10, 0.10, 1) if self.piece.color else (0.02, 0.02, 0.02, 1)
-        with self.canvas:
-            Color(*fill)
-            self._piece_shape(x, y, width, height)
-            Color(*outline)
-            self._piece_outline(x, y, width, height)
-
-    def _piece_shape(self, x: float, y: float, w: float, h: float) -> None:
-        """Siluetas simples, reconocibles y renderizadas por Kivy en cualquier Android."""
-        unit = min(w, h)
-        center = x + w / 2
-        base_y = y + h * 0.13
-        kind = self.piece.piece_type
-
-        RoundedRectangle(pos=(x + w * 0.16, base_y), size=(w * 0.68, h * 0.13), radius=[unit * 0.04])
-        if kind == chess.PAWN:
-            Ellipse(pos=(center - w * 0.15, y + h * 0.58), size=(w * 0.30, h * 0.25))
-            RoundedRectangle(pos=(center - w * 0.22, y + h * 0.30), size=(w * 0.44, h * 0.30), radius=[unit * 0.14])
-        elif kind == chess.ROOK:
-            Rectangle(pos=(center - w * 0.25, y + h * 0.28), size=(w * 0.50, h * 0.46))
-            Rectangle(pos=(center - w * 0.32, y + h * 0.70), size=(w * 0.64, h * 0.12))
-            for offset in (-0.27, -0.09, 0.09, 0.27):
-                Rectangle(pos=(center + w * offset - w * 0.055, y + h * 0.78), size=(w * 0.11, h * 0.10))
-        elif kind == chess.KNIGHT:
-            Ellipse(pos=(center - w * 0.16, y + h * 0.60), size=(w * 0.32, h * 0.24))
-            Triangle(points=[center - w * 0.17, y + h * 0.67, center - w * 0.10, y + h * 0.89, center, y + h * 0.70])
-            Triangle(points=[center + w * 0.03, y + h * 0.62, center + w * 0.28, y + h * 0.31, center - w * 0.22, y + h * 0.31])
-            RoundedRectangle(pos=(center - w * 0.25, y + h * 0.27), size=(w * 0.50, h * 0.20), radius=[unit * 0.08])
-        elif kind == chess.BISHOP:
-            Ellipse(pos=(center - w * 0.16, y + h * 0.62), size=(w * 0.32, h * 0.24))
-            Triangle(points=[center, y + h * 0.64, center - w * 0.26, y + h * 0.31, center + w * 0.26, y + h * 0.31])
-            RoundedRectangle(pos=(center - w * 0.24, y + h * 0.27), size=(w * 0.48, h * 0.13), radius=[unit * 0.06])
-        elif kind == chess.QUEEN:
-            for offset in (-0.22, 0, 0.22):
-                Ellipse(pos=(center + w * offset - w * 0.075, y + h * 0.73), size=(w * 0.15, h * 0.15))
-            Triangle(points=[center - w * 0.30, y + h * 0.70, center + w * 0.30, y + h * 0.70, center + w * 0.24, y + h * 0.31])
-            RoundedRectangle(pos=(center - w * 0.27, y + h * 0.27), size=(w * 0.54, h * 0.13), radius=[unit * 0.06])
-        elif kind == chess.KING:
-            Rectangle(pos=(center - w * 0.045, y + h * 0.76), size=(w * 0.09, h * 0.16))
-            Rectangle(pos=(center - w * 0.14, y + h * 0.82), size=(w * 0.28, h * 0.07))
-            Ellipse(pos=(center - w * 0.16, y + h * 0.58), size=(w * 0.32, h * 0.23))
-            Triangle(points=[center - w * 0.27, y + h * 0.63, center + w * 0.27, y + h * 0.63, center + w * 0.22, y + h * 0.31])
-            RoundedRectangle(pos=(center - w * 0.27, y + h * 0.27), size=(w * 0.54, h * 0.13), radius=[unit * 0.06])
-
-    def _piece_outline(self, x: float, y: float, w: float, h: float) -> None:
-        """Un borde suave mantiene las piezas legibles sobre ambos colores."""
-        Line(rectangle=(x + w * 0.16, y + h * 0.13, w * 0.68, h * 0.13), width=dp(1.1))
-        if self.piece.piece_type == chess.BISHOP:
-            Line(points=[x + w * 0.42, y + h * 0.65, x + w * 0.58, y + h * 0.80], width=dp(1.4))
-        elif self.piece.piece_type == chess.KNIGHT:
-            Line(points=[x + w * 0.42, y + h * 0.73, x + w * 0.55, y + h * 0.73], width=dp(1.4))
 
 
 class EvaluationCurve(Widget):
