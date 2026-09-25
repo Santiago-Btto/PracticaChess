@@ -8,6 +8,7 @@ from src.board_gui import BoardGUI, pixel_to_square
 from src.training import TrainingChallenge
 from src import font_manager as fm
 import config as cfg
+from src.engine_wrapper import result_matches
 
 
 _PUZZLE_FENS = (
@@ -42,6 +43,7 @@ class TrainingScreen:
         self.solution_move: chess.Move | None = None
         self.solved = False
         self._requested_fen: str | None = None
+        self._active_request = None
         self.message = "Stockfish está preparando el reto…"
         self.clock = pygame.time.Clock()
         self.btn_retry = pygame.Rect(0, 0, 0, 0)
@@ -75,7 +77,23 @@ class TrainingScreen:
             pygame.display.flip()
 
     def _make_challenge_when_ready(self) -> None:
-        if self.challenge is not None or self.solved or self.engine.is_analysing:
+        if self.challenge is not None or self.solved:
+            return
+
+        if self._active_request is not None:
+            result = self.engine.get_result(self._active_request.request_id)
+            if not result_matches(result, self._active_request.request_id, self.board.fen()):
+                return
+            candidates = [
+                move for move in (result.best_move, result.alternative_move)
+                if move is not None and move in self.board.legal_moves
+            ]
+            if candidates:
+                self.challenge = TrainingChallenge.from_engine(self.board, candidates)
+                self.message = "Tu turno: encuentra una de las mejores jugadas."
+            return
+
+        if self.engine.is_analysing:
             return
 
         result_fen = getattr(self.engine, "analysis_fen", None)
@@ -101,6 +119,12 @@ class TrainingScreen:
         self.selected = None
         self._requested_fen = self.board.fen()
         self.message = "Stockfish está preparando el reto…"
+        if hasattr(self.engine, "submit_analysis"):
+            self.engine.cancel_owner("training")
+            self._active_request = self.engine.submit_analysis(
+                self.board, owner="training", purpose="live"
+            )
+            return
         self.engine.clear()
         self.engine.request_analysis(self.board)
 

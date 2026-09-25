@@ -13,7 +13,7 @@ import chess
 import config as cfg
 from src.asset_loader import download_pieces, load_piece_images
 from src.board_gui import BoardGUI, pixel_to_square
-from src.engine_wrapper import EngineWrapper
+from src.engine_wrapper import EngineWrapper, result_matches
 from src.game_state import GameMode, GameState
 from src.menu import MenuScreen
 from src.analysis_screen import AnalysisScreen, _BackToMenu
@@ -84,7 +84,12 @@ class ChessApp:
         )
 
         # Motor Stockfish
-        self.engine = EngineWrapper(cfg.STOCKFISH_PATH)
+        self.engine = EngineWrapper(
+            cfg.STOCKFISH_PATH,
+            live_analysis_time=cfg.LIVE_ANALYSIS_TIME_S,
+            review_analysis_time=cfg.REVIEW_ANALYSIS_TIME_S,
+            analysis_skill_level=cfg.ANALYSIS_SKILL_LEVEL,
+        )
         engine_ok   = self.engine.start()
         if not engine_ok:
             log.warning(
@@ -113,6 +118,8 @@ class ChessApp:
         # Control de solicitud de análisis
         self._analysis_requested_for: chess.Zobrist | None = None   # type: ignore
         self._last_fen = ""
+        self._live_request = None
+        self._ai_request = None
 
         # Temporizador para movimiento de IA
         self._ai_move_pending = False
@@ -177,8 +184,10 @@ class ChessApp:
         )
         self.engine.clear()
         if self.engine.is_available():
-            self.engine.set_skill_level(diff["skill"])
-            self.engine.set_analysis_time(diff["time"])
+            self.engine.cancel_owner("live")
+            self.engine.cancel_owner("ai")
+            self.engine.cancel_owner("move-review")
+            self.engine.set_opponent_profile(skill=diff["skill"], time=diff["move_time"])
 
         self._dragging_piece = None
         self._drag_from      = None
@@ -186,6 +195,8 @@ class ChessApp:
         self._test_move_from = None
         self._ai_move_pending = False
         self._last_fen        = ""
+        self._live_request = None
+        self._ai_request = None
         self.evaluation_history = EvaluationHistory()
         self.move_reviews = []
         self.history_navigator = HistoryNavigator.from_game_state(self.state)
@@ -241,9 +252,9 @@ class ChessApp:
                 legal_targets=[] if browsing_history else self.state.legal_targets,
                 last_move=(display_board.peek() if browsing_history and display_board.move_stack
                            else self.state.last_move),
-                best_move=self.engine.best_move if self.engine.is_available() else None,
+                best_move=(self._live_result().best_move if self._live_result() else None),
                 alternative_move=self._blue_suggestion_move(),
-                score=self.engine.score if self.engine.is_available() else None,
+                score=(self._live_result().score if self._live_result() else None),
                 dragging_piece=self._dragging_piece,
                 drag_pos=self._drag_pos,
                 san_history=self.state.san_history,
@@ -448,19 +459,27 @@ class ChessApp:
             # Iniciar espera (para que el análisis pueda correr al menos un poco)
             self._ai_move_pending = True
             self._ai_move_time    = 0.0
-            self.engine.request_analysis(self.state.board)
+            self._ai_request = self.engine.submit_analysis(
+                self.state.board, owner="ai", purpose="opponent"
+            )
             return
 
         self._ai_move_time += dt
         if self._ai_move_time < self._AI_DELAY:
             return
 
-        move = self.engine.best_move
-        if move is None:
+        result = self._result_for(self._ai_request)
+        if result is None:
             # El motor aún no tiene resultado; seguir esperando
             return
 
         self._ai_move_pending = False
+        self._ai_request = None
+        move = result.best_move
+        if move is None or move not in self.state.board.legal_moves:
+            log.warning("Stockfish devolvió una jugada no aplicable para la posición actual.")
+            return
+
         pushed = self.state.push_ai_move(move)
         if pushed:
             self._on_move_made()
@@ -473,15 +492,23 @@ class ChessApp:
         played = self.state.last_move
         previous = self.state._snapshots[-1] if self.state._snapshots else None
         if played is not None and previous is not None:
-            best = self.engine.best_move if self.engine.is_available() else None
+            before_result = self._result_for(self._live_request, previous.fen())
+            best = before_result.best_move if before_result else None
             best_san = previous.san(best) if best in previous.legal_moves else None
             self._review_pending = {
                 "ply": len(self.state.san_history), "san": self.state.san_history[-1],
                 "mover": previous.turn, "played": played, "best": best,
-                "best_san": best_san, "before": self._score_to_cp(self.engine.score),
+                "best_san": best_san,
+                "before": self._score_to_cp(before_result.score if before_result else None),
             }
+            if self.engine.is_available():
+                self._review_pending["request"] = self.engine.submit_analysis(
+                    self.state.board, owner="move-review", purpose="review"
+                )
         self._ai_move_pending = False
         self.engine.clear()
+        self._live_request = None
+        self._ai_request = None
         self._last_fen = ""   # forzar nueva solicitud de análisis
         self._refresh_history_navigation()
 
@@ -505,21 +532,36 @@ class ChessApp:
         if not self.engine.is_available() or self.state.game_over:
             return
         fen = self.state.board.fen()
-        if fen != self._last_fen and not self.engine.is_analysing:
-            self._last_fen = fen
-            self.engine.request_analysis(self.state.board)
-            return
-        if self._review_pending and not self.engine.is_analysing and self.engine.score is not None:
+        if self._review_pending:
             pending = self._review_pending
+            result = self._result_for(pending.get("request"), fen)
+            if result is None:
+                return
             review = review_move(
                 pending["ply"], pending["san"], pending["before"],
-                self._score_to_cp(self.engine.score), pending["mover"],
+                self._score_to_cp(result.score), pending["mover"],
                 played_move=pending["played"], best_move=pending["best"],
                 best_san=pending["best_san"],
             )
             self.move_reviews.append(review)
-            self.evaluation_history.record(pending["san"], self._score_to_cp(self.engine.score))
+            self.evaluation_history.record(pending["san"], self._score_to_cp(result.score))
             self._review_pending = None
+        if fen != self._last_fen:
+            self._last_fen = fen
+            self._live_request = self.engine.submit_analysis(
+                self.state.board, owner="live", purpose="live"
+            )
+
+    def _result_for(self, request, fen: str | None = None):
+        """Devuelve sólo resultados actuales, correctos y de la solicitud activa."""
+        if request is None:
+            return None
+        expected_fen = fen or self.state.board.fen()
+        result = self.engine.get_result(request.request_id)
+        return result if result_matches(result, request.request_id, expected_fen) else None
+
+    def _live_result(self):
+        return self._result_for(self._live_request)
 
     def _blue_suggestion_move(self) -> chess.Move | None:
         """Alternativa de Stockfish visible solo en la partida local entre humanos."""
@@ -530,7 +572,8 @@ class ChessApp:
             or not self.engine.is_available()
         ):
             return None
-        return self.engine.alternative_move
+        result = self._live_result()
+        return result.alternative_move if result else None
 
     # ── Teclado ────────────────────────────────────────────────────────────
 
@@ -621,7 +664,7 @@ class ChessApp:
         try:
             screen = AnalysisScreen(
                 screen=self.screen,
-                engine_path=cfg.STOCKFISH_PATH,
+                engine=self.engine,
                 snapshots=list(self.state._snapshots),
                 moves_played=list(self.state.moves_played),
                 san_history=list(self.state.san_history),

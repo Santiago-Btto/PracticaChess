@@ -2,6 +2,7 @@ import chess
 import pygame
 
 from src.board_gui import square_to_pixel
+from src.engine_wrapper import AnalysisRequest, AnalysisResult
 from src.training import TrainingChallenge
 from src.training_screen import TrainingScreen
 
@@ -19,6 +20,24 @@ class _Engine:
 
     def request_analysis(self, board):
         self.requests.append(board.fen())
+
+
+class _RequestEngine:
+    def __init__(self):
+        self.requests = []
+        self.results = {}
+        self.cancelled = []
+
+    def submit_analysis(self, board, *, owner, purpose="live", replace=True):
+        request = AnalysisRequest(str(len(self.requests)), board.fen(), owner, purpose)
+        self.requests.append(request)
+        return request
+
+    def get_result(self, request_id):
+        return self.results.get(request_id)
+
+    def cancel_owner(self, owner):
+        self.cancelled.append(owner)
 
 
 def _pieces():
@@ -108,3 +127,27 @@ def test_training_panel_routes_retry_next_and_menu_actions():
     assert screen._handle_panel_click(screen.btn_next.center) is True
     assert engine.requests[-1] == screen.board.fen()
     assert screen._handle_panel_click(screen.btn_menu.center) is True
+
+
+def test_training_uses_only_its_current_request_and_replaces_the_previous_puzzle():
+    engine = _RequestEngine()
+    screen = _screen(engine)
+    screen._request_current_challenge()
+    first = engine.requests[-1]
+    engine.results[first.request_id] = AnalysisResult(
+        first.request_id, first.fen, chess.Move.from_uci("e2e4"), None, 0,
+    )
+
+    screen.next_challenge()
+    screen._make_challenge_when_ready()
+
+    assert screen.challenge is None
+    assert screen._active_request.request_id != first.request_id
+    assert engine.cancelled == ["training", "training"]
+
+    current = screen._active_request
+    engine.results[current.request_id] = AnalysisResult(
+        current.request_id, current.fen, chess.Move.from_uci("f1b5"), None, 0,
+    )
+    screen._make_challenge_when_ready()
+    assert screen.challenge is not None

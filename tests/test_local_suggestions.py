@@ -6,7 +6,7 @@ import pygame
 import config as cfg
 from main import ChessApp
 from src.board_gui import BoardGUI
-from src.engine_wrapper import ranked_moves
+from src.engine_wrapper import AnalysisRequest, AnalysisResult, ranked_moves
 from src.game_state import GameMode, GameState
 
 
@@ -31,7 +31,11 @@ def test_blue_arrow_is_available_only_for_local_human_vs_human_games():
     app = ChessApp.__new__(ChessApp)
     app.show_ai_indicator = True
     app.show_blue_alternative = True
-    app.engine = SimpleNamespace(alternative_move=alternative, is_available=lambda: True)
+    app.engine = SimpleNamespace(
+        is_available=lambda: True,
+        get_result=lambda request_id: AnalysisResult(request_id, chess.STARTING_FEN, None, alternative, 0),
+    )
+    app._live_request = AnalysisRequest("live", chess.STARTING_FEN, "live", "live")
 
     app.state = GameState(mode=GameMode.HUMAN_VS_HUMAN)
     assert app._blue_suggestion_move() == alternative
@@ -44,7 +48,8 @@ def test_blue_arrow_toggle_hides_the_local_alternative():
     app = ChessApp.__new__(ChessApp)
     app.show_ai_indicator = True
     app.show_blue_alternative = False
-    app.engine = SimpleNamespace(alternative_move=chess.Move.from_uci("d2d4"), is_available=lambda: True)
+    app.engine = SimpleNamespace(is_available=lambda: True)
+    app._live_request = None
     app.state = GameState(mode=GameMode.HUMAN_VS_HUMAN)
 
     assert app._blue_suggestion_move() is None

@@ -4,16 +4,16 @@ Pantalla de análisis post-partida: revisión paso a paso con
 evaluación de cada jugada (rating 1-5, justificación, mejor opción).
 """
 import math
-import sys
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 
 import chess
-import chess.engine
 import pygame
 
 import config as cfg
 from src import font_manager as fm
+from src.engine_wrapper import result_matches
 
 # ── Constantes de layout ───────────────────────────────────────────────────
 SQ   = 60                          # tamaño casilla en análisis
@@ -176,7 +176,7 @@ class AnalysisScreen:
     def __init__(
         self,
         screen: pygame.Surface,
-        engine_path: str,
+        engine,
         snapshots: list,        # list[chess.Board] — estado ANTES de cada movimiento
         moves_played: list,     # list[chess.Move]
         san_history: list,      # list[str]
@@ -185,7 +185,7 @@ class AnalysisScreen:
         visual_theme: str = cfg.VISUAL_THEME_CHESS_COM,
     ):
         self.screen      = screen
-        self.engine_path = engine_path
+        self.engine = engine
         self.snapshots   = snapshots
         self.moves       = moves_played
         self.san_history = san_history
@@ -205,6 +205,12 @@ class AnalysisScreen:
         self._list_item_h   = 36
         self._list_top      = BY + 10
         self._list_visible  = 10       # aprox. cuántos caben
+        self._review_owner = f"post-game-review-{uuid.uuid4().hex}"
+        self._analysis_index = 0
+        self._analysis_active = False
+        self._pending_before = None
+        self._pending_after = None
+        self._before_result = None
 
         # Botones de navegación (ubicados debajo de las coordenadas a-h)
         nav_y = BY + BSZ + 38
@@ -218,20 +224,16 @@ class AnalysisScreen:
     # ── Run ────────────────────────────────────────────────────────────────
 
     def run(self):
-        self._run_analysis()
-        if not self.data:
-            return                      # partida sin movimientos, salir
-
-        self.current_idx = len(self.data) - 1
-        self._ensure_scroll()
-
+        self._start_analysis()
         while True:
             mp = pygame.mouse.get_pos()
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    pygame.quit(); sys.exit()
+                    self._cancel_analysis()
+                    return
                 if event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_ESCAPE, pygame.K_m):
+                        self._cancel_analysis()
                         return
                     if event.key in (pygame.K_LEFT, pygame.K_a):
                         self._go(self.current_idx - 1)
@@ -248,83 +250,108 @@ class AnalysisScreen:
                         0, min(len(self.data) - self._list_visible,
                                self._scroll_offset - event.y))
 
-            self._draw(mp)
+            self._poll_analysis()
+            if self._analysis_active:
+                self._draw_loading(len(self.data), len(self.moves))
+            elif not self.data:
+                return
+            else:
+                if self.current_idx < 0:
+                    self.current_idx = len(self.data) - 1
+                    self._ensure_scroll()
+                self._draw(mp)
             pygame.display.flip()
             self.clock.tick(cfg.FPS)
 
     # ── Análisis con Stockfish ─────────────────────────────────────────────
 
-    def _run_analysis(self):
+    def _start_analysis(self):
         if not self.moves:
             return
-        n = len(self.moves)
-        self._draw_loading(0, n)
+        self._analysis_active = True
+        self._analysis_index = 0
+        self._submit_before()
 
-        try:
-            engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
-        except Exception:
+    def _submit_before(self):
+        board = self.snapshots[self._analysis_index]
+        self._pending_before = self.engine.submit_analysis(
+            board, owner=self._review_owner, purpose="review"
+        )
+
+    def _poll_analysis(self):
+        if not self._analysis_active:
             return
+        if self._pending_before is not None:
+            result = self._current_result(self._pending_before)
+            if result is None:
+                return
+            self._before_result = result
+            board_after = self.snapshots[self._analysis_index].copy()
+            board_after.push(self.moves[self._analysis_index])
+            self._pending_after = self.engine.submit_analysis(
+                board_after, owner=self._review_owner, purpose="review"
+            )
+            self._pending_before = None
+            return
+        if self._pending_after is None:
+            return
+        after_result = self._current_result(self._pending_after)
+        if after_result is None:
+            return
+        self._append_current_move(self._before_result, after_result)
+        self._pending_after = None
+        self._analysis_index += 1
+        if self._analysis_index >= len(self.moves):
+            self._analysis_active = False
+            return
+        self._submit_before()
 
-        for i, (board_before, move, san) in enumerate(
-                zip(self.snapshots, self.moves, self.san_history)):
-            self._draw_loading(i, n)
-            try:
-                info = engine.analyse(board_before, chess.engine.Limit(time=0.25))
-                best_pv = info.get("pv", [])
-                best_move = best_pv[0] if best_pv else None
-                score_best_pov = info["score"].pov(board_before.turn)
-                score_best_cp  = score_best_pov.score(mate_score=10000) or 0
-            except Exception:
-                best_move, score_best_cp = None, 0
+    def _current_result(self, request):
+        result = self.engine.get_result(request.request_id)
+        if result_matches(result, request.request_id, request.fen):
+            return result
+        # Un resultado fallido válido termina esta posición sin bloquear la UI.
+        if result and result.request_id == request.request_id and result.fen == request.fen:
+            return result
+        return None
 
-            # 2. Analizar posición DESPUÉS del movimiento real
-            board_after = board_before.copy()
-            board_after.push(move)
-            try:
-                info2 = engine.analyse(board_after, chess.engine.Limit(time=0.20))
-                score_after_next = info2["score"].pov(board_after.turn)
-                score_after_cp_next = score_after_next.score(mate_score=10000) or 0
-                # Desde la perspectiva del que acaba de mover: negamos
-                score_after_mover = -score_after_cp_next
-                # Desde perspectiva de blancas (para barra eval)
-                score_after_white = info2["score"].white().score(mate_score=10000) or 0
-            except Exception:
-                score_after_mover, score_after_white = 0, 0
+    @staticmethod
+    def _score_cp(score) -> int:
+        if isinstance(score, int):
+            return score
+        if score is None:
+            return 0
+        try:
+            return score.score(mate_score=10000) or 0
+        except Exception:
+            return 0
 
-            # 3. Delta (pérdida del bando que movió)
-            delta = max(0, score_best_cp - score_after_mover)
+    def _append_current_move(self, before_result, after_result):
+        i = self._analysis_index
+        board_before, move, san = self.snapshots[i], self.moves[i], self.san_history[i]
+        best_move = before_result.best_move
+        before_white = self._score_cp(before_result.score)
+        after_white = self._score_cp(after_result.score)
+        before_mover = before_white if board_before.turn == chess.WHITE else -before_white
+        after_mover = after_white if board_before.turn == chess.WHITE else -after_white
+        delta = max(0, before_mover - after_mover)
+        try:
+            best_san = board_before.san(best_move) if best_move else ""
+        except Exception:
+            best_san = str(best_move)
+        rating, cbg, ctxt, badge, label = _rate(delta)
+        self.data.append(MoveData(
+            idx=i, color=board_before.turn, san=san, fen_before=board_before.fen(), move=move,
+            best_move=best_move, best_san=best_san, score_after_cp=after_white,
+            delta_cp=delta, rating=rating, cbg=cbg, ctxt=ctxt, badge=badge, label=label,
+            justification=_justify(san, best_san, delta, rating, after_white, best_move == move,
+                                   color=board_before.turn, move_idx=i),
+        ))
 
-            # 4. SAN de la mejor jugada
-            best_san = ""
-            if best_move:
-                try:
-                    best_san = board_before.san(best_move)
-                except Exception:
-                    best_san = str(best_move)
-
-            is_best = (best_move == move)
-
-            rating, cbg, ctxt, badge, label = _rate(delta)
-            justif = _justify(san, best_san, delta, rating,
-                               score_after_white, is_best,
-                               color=board_before.turn, move_idx=i)
-
-            self.data.append(MoveData(
-                idx=i,
-                color=board_before.turn,
-                san=san,
-                fen_before=board_before.fen(),
-                move=move,
-                best_move=best_move,
-                best_san=best_san,
-                score_after_cp=score_after_white,
-                delta_cp=delta,
-                rating=rating,
-                cbg=cbg, ctxt=ctxt, badge=badge, label=label,
-                justification=justif,
-            ))
-
-        engine.quit()
+    def _cancel_analysis(self):
+        self.engine.cancel_owner(self._review_owner)
+        self._analysis_active = False
+        self._pending_before = self._pending_after = None
 
     # ── Navegación ────────────────────────────────────────────────────────
 
@@ -342,6 +369,7 @@ class AnalysisScreen:
 
     def _handle_click(self, pos):
         if self._btn_menu.collidepoint(pos):
+            self._cancel_analysis()
             raise _BackToMenu()
         if self._btn_first.collidepoint(pos): self._go(0)
         if self._btn_prev.collidepoint(pos):  self._go(self.current_idx - 1)

@@ -97,16 +97,21 @@ C_SELECTED_BG   = (30,  60, 130)
 STOCKFISH_PATH = find_stockfish_binary(BASE_DIR)
 
 # ── Análisis ───────────────────────────────────────────────────────────────
-ANALYSIS_TIME_S = 0.15   # segundos por análisis en background
+# La calidad del análisis es independiente de la dificultad del rival.
+LIVE_ANALYSIS_TIME_S = 0.15
+REVIEW_ANALYSIS_TIME_S = 0.25
+ANALYSIS_SKILL_LEVEL = 20
+# Alias temporal para configuraciones externas previas.
+ANALYSIS_TIME_S = LIVE_ANALYSIS_TIME_S
 
 # ── Niveles de dificultad ──────────────────────────────────────────────────
 DIFFICULTY_LEVELS = [
-    {"name": "Principiante", "skill": 1,  "time": 0.05},
-    {"name": "Fácil",        "skill": 5,  "time": 0.10},
-    {"name": "Intermedio",   "skill": 10, "time": 0.15},
-    {"name": "Avanzado",     "skill": 15, "time": 0.25},
-    {"name": "Experto",      "skill": 18, "time": 0.40},
-    {"name": "Máximo",       "skill": 20, "time": 0.60},
+    {"name": "Principiante", "skill": 1,  "move_time": 0.05},
+    {"name": "Fácil",        "skill": 5,  "move_time": 0.10},
+    {"name": "Intermedio",   "skill": 10, "move_time": 0.15},
+    {"name": "Avanzado",     "skill": 15, "move_time": 0.25},
+    {"name": "Experto",      "skill": 18, "move_time": 0.40},
+    {"name": "Máximo",       "skill": 20, "move_time": 0.60},
 ]
 
 # ── Assets ─────────────────────────────────────────────────────────────────
