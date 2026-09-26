@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import monotonic
+from threading import Event
+from typing import Callable
 
 import chess
 
@@ -15,10 +18,86 @@ PIECE_VALUES = {
     chess.KING: 0,
 }
 MATE_SCORE = 1_000_000
-SEARCH_DEPTH = 2
+MAX_SEARCH_DEPTH = 4
+ANALYSIS_BUDGET_SECONDS = {"hint": 0.20, "review": 0.75}
 ANALYSIS_LIMITATION = (
     "Análisis local: libro de aperturas pequeño y búsqueda breve; no sustituye a Stockfish."
 )
+
+
+@dataclass(frozen=True)
+class AnalysisResult:
+    """Resultado inmutable de una posición, expresado desde blancas."""
+
+    fen: str
+    best_move: chess.Move | None
+    evaluation: int
+    terminal: bool
+    depth: int = 0
+
+
+@dataclass(frozen=True)
+class AnalysisRecord:
+    fen: str
+    ply: int
+    evaluation: int
+    best_move: chess.Move | None
+
+
+@dataclass(frozen=True)
+class FinishedGame:
+    initial_fen: str
+    moves: tuple[str, ...]
+    san_moves: tuple[str, ...]
+    result: str
+
+
+@dataclass(frozen=True)
+class ReviewEntry:
+    ply: int
+    san: str
+    category: str
+    evaluation_before: int
+    evaluation_after: int
+    best_alternative_san: str | None
+    terminal: bool
+
+
+@dataclass(frozen=True)
+class _RequestToken:
+    request_id: int
+    fen: str
+    generation: int
+    review_generation: int
+    cancelled: Event
+
+
+class _InlineExecutor:
+    def submit(self, function: Callable[[], None]) -> None:
+        function()
+
+
+class AnalysisCoordinator:
+    """Una cola de CPU; sus callbacks sólo llegan a través del despachador UI."""
+
+    def __init__(self, executor=None, dispatch: Callable[[Callable[[], None]], None] | None = None):
+        self.executor = executor or _InlineExecutor()
+        self.dispatch = dispatch or (lambda callback: callback())
+
+    def submit(
+        self,
+        work: Callable[[], AnalysisResult | ReviewEntry],
+        deliver: Callable[[AnalysisResult | ReviewEntry], None],
+    ) -> None:
+        def run() -> None:
+            result = work()
+            self.dispatch(lambda: deliver(result))
+
+        self.executor.submit(run)
+
+
+class _SearchStopped(Exception):
+    """La búsqueda cooperativa agotó su presupuesto o fue cancelada."""
 
 
 def _position_key(board: chess.Board) -> tuple[str, chess.Color, int, chess.Square | None]:
@@ -104,16 +183,28 @@ def display_to_square(row: int, column: int, *, flipped: bool) -> chess.Square:
 class MobileGameController:
     """Estado táctil mínimo: selección, jugadas legales, historial y promoción."""
 
-    def __init__(self, initial_fen: str | None = None):
+    def __init__(self, initial_fen: str | None = None, *, executor=None, dispatch=None):
         self._initial_fen = initial_fen
         self.board = chess.Board(initial_fen) if initial_fen else chess.Board()
         self.selected_square: chess.Square | None = None
         self.legal_targets: list[chess.Square] = []
         self.san_history: list[str] = []
         self._snapshots: list[chess.Board] = []
-        self.evaluation_curve: list[int] = [self._material_evaluation()]
+        self.evaluation_curve: list[int] = []
         self.recommended_move: chess.Move | None = None
         self.analysis_source = "search"
+        self.analysis_records: list[AnalysisRecord] = []
+        self._generation = 0
+        self._review_generation = 0
+        self._next_request_id = 0
+        self._active_token: _RequestToken | None = None
+        self._coordinator = AnalysisCoordinator(executor, dispatch)
+        self.finished_game: FinishedGame | None = None
+        self.review_active = False
+        self.review_entries: list[ReviewEntry] = []
+        self.review_progress = (0, 0)
+        self._review_snapshot: FinishedGame | None = None
+        self._review_cancel: Event | None = None
         self.refresh_analysis()
 
     def tap(self, square: chess.Square) -> TapOutcome:
@@ -123,13 +214,20 @@ class MobileGameController:
 
         move = self._build_move(self.selected_square, square)
         if move in self.board.legal_moves:
+            self._invalidate_requests()
             san = self.board.san(move)
             self._snapshots.append(self.board.copy(stack=True))
             self.board.push(move)
             self.san_history.append(san)
-            self.evaluation_curve.append(self._material_evaluation())
             self._clear_selection()
             self.refresh_analysis()
+            if self.board.is_game_over(claim_draw=True):
+                self.finished_game = FinishedGame(
+                    self._initial_fen or chess.STARTING_FEN,
+                    tuple(item.uci() for item in self.board.move_stack),
+                    tuple(self.san_history),
+                    self.board.result(claim_draw=True),
+                )
             return TapOutcome("moved", san)
 
         piece = self.board.piece_at(square)
@@ -143,25 +241,218 @@ class MobileGameController:
         """Restaura la posición inmediatamente anterior, si existe."""
         if not self._snapshots:
             return False
+        self._invalidate_requests()
         self.board = self._snapshots.pop()
         self.san_history.pop()
-        self.evaluation_curve.pop()
+        self._discard_records_after_current_ply()
+        self.finished_game = None
         self._clear_selection()
         self.refresh_analysis()
         return True
 
     def reset(self) -> None:
+        self._invalidate_requests()
         self.board = chess.Board(self._initial_fen) if self._initial_fen else chess.Board()
         self.san_history = []
         self._snapshots = []
-        self.evaluation_curve = [self._material_evaluation()]
+        self.analysis_records = []
+        self.evaluation_curve = []
+        self.finished_game = None
+        self.exit_review()
         self._clear_selection()
         self.refresh_analysis()
 
     def refresh_analysis(self) -> chess.Move | None:
         """Recalcula la sugerencia local para que la interfaz nunca quede obsoleta."""
-        self.recommended_move = self.analysis_move()
+        self.request_analysis()
         return self.recommended_move
+
+    def request_analysis(self, *, purpose: str = "hint") -> _RequestToken:
+        """Solicita análisis de una instantánea; nunca entrega datos sin validar token."""
+        self._next_request_id += 1
+        token = _RequestToken(
+            self._next_request_id, self.board.fen(), self._generation, self._review_generation, Event()
+        )
+        self._active_token = token
+
+        def work() -> AnalysisResult:
+            return self._analyse_fen(token.fen, purpose, token.cancelled.is_set)
+
+        self._coordinator.submit(work, lambda result: self._accept_analysis(token, result))
+        return token
+
+    def _analyse_fen(
+        self, fen: str, purpose: str, cancelled: Callable[[], bool] | None = None
+    ) -> AnalysisResult:
+        # Una instancia desnuda evita que el worker vea o mute el tablero vivo.
+        worker = object.__new__(MobileGameController)
+        worker.board = chess.Board(fen)
+        worker.analysis_source = "search"
+        return worker.analyse_position(purpose=purpose, cancelled=cancelled)
+
+    def _accept_analysis(self, token: _RequestToken, result: AnalysisResult | ReviewEntry) -> bool:
+        if not isinstance(result, AnalysisResult) or not self._token_is_current(token):
+            return False
+        self.recommended_move = result.best_move
+        self._upsert_record(AnalysisRecord(result.fen, len(self.san_history), result.evaluation, result.best_move))
+        return True
+
+    def _token_is_current(self, token: _RequestToken) -> bool:
+        return (
+            self._active_token == token
+            and token.fen == self.board.fen()
+            and token.generation == self._generation
+            and token.review_generation == self._review_generation
+        )
+
+    def _invalidate_requests(self) -> None:
+        if self._active_token is not None:
+            self._active_token.cancelled.set()
+        if self._review_cancel is not None:
+            self._review_cancel.set()
+        self._generation += 1
+        self._review_generation += 1
+        self._active_token = None
+
+    def _upsert_record(self, record: AnalysisRecord) -> None:
+        self.analysis_records = [item for item in self.analysis_records if item.ply != record.ply]
+        self.analysis_records.append(record)
+        self.analysis_records.sort(key=lambda item: item.ply)
+        self.evaluation_curve = [item.evaluation for item in self.analysis_records]
+
+    def _discard_records_after_current_ply(self) -> None:
+        ply = len(self.san_history)
+        self.analysis_records = [item for item in self.analysis_records if item.ply <= ply]
+        self.evaluation_curve = [item.evaluation for item in self.analysis_records]
+
+    def analyse_position(
+        self,
+        *,
+        purpose: str = "hint",
+        clock: Callable[[], float] = monotonic,
+        budget_seconds: float | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> AnalysisResult:
+        """Analiza la posición actual sin inventar una jugada en posiciones terminales."""
+        terminal = self.board.is_game_over(claim_draw=True)
+        if terminal:
+            self.analysis_source = "search"
+            return AnalysisResult(self.board.fen(), None, self._white_evaluation(), True)
+        moves = list(self.board.legal_moves)
+        book_move = self._book_move()
+        if book_move is not None:
+            self.analysis_source = "book"
+            return AnalysisResult(self.board.fen(), book_move, self._white_evaluation(), False)
+        self.analysis_source = "search"
+        budget = self.analysis_budget(purpose) if budget_seconds is None else budget_seconds
+        return self._search_result(moves, clock() + max(0.0, budget), clock, cancelled)
+
+    @staticmethod
+    def analysis_budget(purpose: str) -> float:
+        try:
+            return ANALYSIS_BUDGET_SECONDS[purpose]
+        except KeyError as exc:
+            raise ValueError(f"Propósito de análisis desconocido: {purpose}") from exc
+
+    def _white_evaluation(self) -> int:
+        """Normaliza el evaluador local a la perspectiva de las blancas."""
+        if self.board.is_checkmate():
+            return -MATE_SCORE if self.board.turn == chess.WHITE else MATE_SCORE
+        return self._positional_evaluation(self.board, chess.WHITE)
+
+    @staticmethod
+    def classify_loss(loss: int) -> str:
+        if loss <= 15:
+            return "best move"
+        if loss <= 50:
+            return "good move"
+        if loss <= 120:
+            return "inaccuracy"
+        if loss <= 250:
+            return "mistake"
+        return "blunder"
+
+    def review_position(self, ply: int) -> chess.Board:
+        """Reconstruye una posición sólo desde la instantánea final inmutable."""
+        snapshot = self._review_snapshot or self.finished_game
+        if snapshot is None:
+            raise ValueError("No hay partida finalizada para revisar")
+        if not 0 <= ply <= len(snapshot.moves):
+            raise IndexError("Ply de revisión fuera de rango")
+        board = chess.Board(snapshot.initial_fen)
+        for uci in snapshot.moves[:ply]:
+            board.push_uci(uci)
+        return board
+
+    def start_review(self) -> None:
+        if self.finished_game is None:
+            raise ValueError("La revisión sólo está disponible al terminar la partida")
+        self._invalidate_requests()
+        self._review_snapshot = self.finished_game
+        self._review_cancel = Event()
+        self.review_active = True
+        self.review_entries = []
+        self.review_progress = (0, len(self._review_snapshot.moves))
+        self._request_next_review_entry(0)
+
+    def exit_review(self) -> None:
+        if self._review_cancel is not None:
+            self._review_cancel.set()
+        self._review_generation += 1
+        self._active_token = None
+        self.review_active = False
+        self.review_entries = []
+        self.review_progress = (0, 0)
+        self._review_snapshot = None
+        self._review_cancel = None
+
+    def _request_next_review_entry(self, index: int) -> None:
+        snapshot = self._review_snapshot
+        if not self.review_active or snapshot is None or index >= len(snapshot.moves):
+            return
+        generation = self._review_generation
+        cancel = self._review_cancel
+
+        def work() -> ReviewEntry:
+            before = self.review_position(index)
+            played = chess.Move.from_uci(snapshot.moves[index])
+            san = before.san(played)
+            before_result = self._analyse_fen(before.fen(), "review", cancel.is_set if cancel else None)
+            before.push(played)
+            after_result = self._analyse_fen(before.fen(), "review", cancel.is_set if cancel else None)
+            mover = not before.turn
+            loss = (
+                max(0, before_result.evaluation - after_result.evaluation)
+                if mover == chess.WHITE
+                else max(0, after_result.evaluation - before_result.evaluation)
+            )
+            alternative = None
+            original = self.review_position(index)
+            if before_result.best_move is not None and before_result.best_move != played:
+                alternative = original.san(before_result.best_move)
+            return ReviewEntry(
+                index + 1,
+                san,
+                self.classify_loss(loss),
+                before_result.evaluation,
+                after_result.evaluation,
+                alternative,
+                after_result.terminal,
+            )
+
+        def deliver(result: AnalysisResult | ReviewEntry) -> None:
+            if (
+                not isinstance(result, ReviewEntry)
+                or not self.review_active
+                or self._review_snapshot != snapshot
+                or self._review_generation != generation
+            ):
+                return
+            self.review_entries.append(result)
+            self.review_progress = (len(self.review_entries), len(snapshot.moves))
+            self._request_next_review_entry(index + 1)
+
+        self._coordinator.submit(work, deliver)
 
     def analysis_move(self) -> chess.Move | None:
         """Sugiere una jugada legal con libro exacto o búsqueda local breve.
@@ -171,18 +462,7 @@ class MobileGameController:
         evaluación posicional ligera, por lo que sigue siendo una guía local y
         no pretende sustituir a Stockfish.
         """
-        moves = list(self.board.legal_moves)
-        if not moves:
-            self.analysis_source = "search"
-            return None
-
-        book_move = self._book_move()
-        if book_move is not None:
-            self.analysis_source = "book"
-            return book_move
-
-        self.analysis_source = "search"
-        return self._search_best_move(moves)
+        return self.analyse_position().best_move
 
     def _book_move(self) -> chess.Move | None:
         recommended_uci = OPENING_BOOK.get(_position_key(self.board))
@@ -191,23 +471,69 @@ class MobileGameController:
         move = chess.Move.from_uci(recommended_uci)
         return move if move in self.board.legal_moves else None
 
-    def _search_best_move(self, moves: list[chess.Move]) -> chess.Move:
-        """Negamax corto: suficiente para réplicas inmediatas sin bloquear la UI."""
+    def _search_result(
+        self,
+        moves: list[chess.Move],
+        deadline: float,
+        clock: Callable[[], float],
+        cancelled: Callable[[], bool] | None,
+    ) -> AnalysisResult:
+        """Itera profundidades; conserva sólo la última iteración terminada."""
+        ordered = self._ordered_moves(self.board, moves)
+        # El respaldo de profundidad cero está completo antes de entrar a la
+        # búsqueda y garantiza una sugerencia legal aun en un dispositivo lento.
+        best_move = ordered[0]
+        best_score = self.analysis_score(best_move)
+        completed_depth = 0
+        # Dos plies es la primera iteración útil: reproduce la defensa ante
+        # la réplica inmediata que ya ofrecía la versión anterior.
+        for depth in range(2, MAX_SEARCH_DEPTH + 1):
+            try:
+                self._check_search_stop(deadline, clock, cancelled)
+                candidate, score = self._search_at_depth(ordered, depth, deadline, clock, cancelled)
+            except _SearchStopped:
+                break
+            best_move, best_score, completed_depth = candidate, score, depth
+            if abs(best_score) >= MATE_SCORE:
+                break
+        white_score = best_score if self.board.turn == chess.WHITE else -best_score
+        return AnalysisResult(self.board.fen(), best_move, self._normalize_evaluation(white_score), False, completed_depth)
+
+    def _search_at_depth(
+        self,
+        moves: list[chess.Move],
+        depth: int,
+        deadline: float,
+        clock: Callable[[], float],
+        cancelled: Callable[[], bool] | None,
+    ) -> tuple[chess.Move, int]:
         best_move: chess.Move | None = None
         best_score = -MATE_SCORE * 2
-        for move in self._ordered_moves(self.board, moves):
+        for move in moves:
+            self._check_search_stop(deadline, clock, cancelled)
             self.board.push(move)
-            score = -self._negamax(self.board, SEARCH_DEPTH - 1, -MATE_SCORE * 2, MATE_SCORE * 2)
-            self.board.pop()
+            try:
+                score = -self._negamax(self.board, depth - 1, -MATE_SCORE * 2, MATE_SCORE * 2, deadline, clock, cancelled)
+            finally:
+                self.board.pop()
             score += self._early_move_penalty(move)
             if best_move is None or (score, move.uci()) > (best_score, best_move.uci()):
-                best_score = score
-                best_move = move
+                best_score, best_move = score, move
         assert best_move is not None
-        return best_move
+        return best_move, best_score
 
     @classmethod
-    def _negamax(cls, board: chess.Board, depth: int, alpha: int, beta: int) -> int:
+    def _negamax(
+        cls,
+        board: chess.Board,
+        depth: int,
+        alpha: int,
+        beta: int,
+        deadline: float,
+        clock: Callable[[], float],
+        cancelled: Callable[[], bool] | None,
+    ) -> int:
+        cls._check_search_stop(deadline, clock, cancelled)
         if board.is_checkmate():
             return -MATE_SCORE - depth
         if board.is_stalemate() or board.is_insufficient_material():
@@ -218,13 +544,29 @@ class MobileGameController:
         best_score = -MATE_SCORE * 2
         for move in cls._ordered_moves(board, list(board.legal_moves)):
             board.push(move)
-            score = -cls._negamax(board, depth - 1, -beta, -alpha)
-            board.pop()
+            try:
+                score = -cls._negamax(board, depth - 1, -beta, -alpha, deadline, clock, cancelled)
+            finally:
+                board.pop()
             best_score = max(best_score, score)
             alpha = max(alpha, score)
             if alpha >= beta:
                 break
         return best_score
+
+    @staticmethod
+    def _check_search_stop(
+        deadline: float,
+        clock: Callable[[], float],
+        cancelled: Callable[[], bool] | None,
+    ) -> None:
+        if (cancelled is not None and cancelled()) or clock() >= deadline:
+            raise _SearchStopped
+
+    @staticmethod
+    def _normalize_evaluation(score: int) -> int:
+        """Limita las evaluaciones mate para gráficos y clasificación estables."""
+        return max(-MATE_SCORE, min(MATE_SCORE, score))
 
     @classmethod
     def _ordered_moves(cls, board: chess.Board, moves: list[chess.Move]) -> list[chess.Move]:

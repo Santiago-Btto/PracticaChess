@@ -10,8 +10,9 @@ TITLE_HEIGHT = 38
 STATUS_HEIGHT = 26
 EVALUATION_LABEL_HEIGHT = 18
 EVALUATION_CURVE_HEIGHT = 50
-CONTROLS_HEIGHT = 100
-FIXED_WIDGET_COUNT = 5
+REVIEW_HEIGHT = 84
+CONTROLS_HEIGHT = 154
+FIXED_WIDGET_COUNT = 6
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ def mobile_layout_metrics(width: float, height: float) -> MobileLayoutMetrics:
         + STATUS_HEIGHT
         + EVALUATION_LABEL_HEIGHT
         + EVALUATION_CURVE_HEIGHT
+        + REVIEW_HEIGHT
         + CONTROLS_HEIGHT
     )
     board_area_height = max(0.0, height - fixed_content_height)

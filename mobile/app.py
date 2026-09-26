@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import chess
@@ -16,6 +17,7 @@ if __package__:
         SECTION_SPACING,
         STATUS_HEIGHT,
         TITLE_HEIGHT,
+        REVIEW_HEIGHT,
     )
 else:  # Buildozer ejecuta main.py como script dentro del APK.
     from controller import MobileGameController, display_to_square
@@ -27,10 +29,12 @@ else:  # Buildozer ejecuta main.py como script dentro del APK.
         SECTION_SPACING,
         STATUS_HEIGHT,
         TITLE_HEIGHT,
+        REVIEW_HEIGHT,
     )
 
 try:
     from kivy.app import App
+    from kivy.clock import Clock
     from kivy.graphics import Color, Ellipse, Line, RoundedRectangle, Triangle
     from kivy.metrics import dp
     from kivy.uix.boxlayout import BoxLayout
@@ -158,8 +162,12 @@ class ChessMobileApp(App):
     title = "PracticaChess"
 
     def build(self):
-        self.controller = MobileGameController()
+        self.analysis_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chess-analysis")
+        self.controller = MobileGameController(
+            executor=self.analysis_executor, dispatch=self._dispatch_on_ui
+        )
         self.flipped = False
+        self.review_index = 0
 
         root = BoxLayout(
             orientation="vertical", padding=dp(OUTER_PADDING), spacing=dp(SECTION_SPACING)
@@ -184,6 +192,18 @@ class ChessMobileApp(App):
         self.evaluation = EvaluationCurve(size_hint_y=None, height=dp(EVALUATION_CURVE_HEIGHT))
         root.add_widget(self.evaluation)
 
+        self.review_panel = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(REVIEW_HEIGHT))
+        self.review_progress_label = Label(text="Progreso de revisión: 0/0", size_hint_y=None, height=dp(22))
+        self.analysis_note = Label(
+            text="Análisis automático", size_hint_y=None, height=dp(18), color=(0.42, 0.70, 0.95, 1)
+        )
+        self.review_detail_label = Label(text="", halign="center", valign="middle")
+        self.review_detail_label.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+        self.review_panel.add_widget(self.review_progress_label)
+        self.review_panel.add_widget(self.analysis_note)
+        self.review_panel.add_widget(self.review_detail_label)
+        root.add_widget(self.review_panel)
+
         # La superficie es el único tramo flexible. El tablero se calcula dentro
         # de ella y queda cuadrado, sin desplazar ni cubrir los controles.
         self.board_surface = FloatLayout(size_hint_y=1)
@@ -195,17 +215,27 @@ class ChessMobileApp(App):
         root.add_widget(self.board_surface)
 
         controls = GridLayout(
-            cols=2, size_hint_y=None, height=dp(CONTROLS_HEIGHT), spacing=dp(SECTION_SPACING)
+            cols=2, rows=3, size_hint_y=None, height=dp(CONTROLS_HEIGHT), spacing=dp(SECTION_SPACING)
         )
         controls.add_widget(self._control_button("Voltear", self._flip))
         controls.add_widget(self._control_button("Deshacer", self._undo))
         controls.add_widget(self._control_button("Reiniciar", self._reset))
-        controls.add_widget(
-            Label(text="Análisis automático", color=(0.42, 0.70, 0.95, 1))
-        )
+        self.review_button = self._control_button("Revisar partida", self._start_review)
+        controls.add_widget(self.review_button)
+        controls.add_widget(self._control_button("Anterior", self._previous_review))
+        controls.add_widget(self._control_button("Siguiente", self._next_review))
+        controls.add_widget(self._control_button("Salir revisión", self._exit_review))
         root.add_widget(controls)
         self._redraw()
         return root
+
+    def _dispatch_on_ui(self, callback) -> None:
+        """El worker entrega estado al hilo principal antes de redibujar Kivy."""
+        def apply(_dt):
+            callback()
+            if hasattr(self, "board_grid"):
+                self._redraw()
+        Clock.schedule_once(apply, 0)
 
     def _layout_board(self, *_args) -> None:
         """Ubica el tablero completo al inicio de su área flexible."""
@@ -223,6 +253,8 @@ class ChessMobileApp(App):
         return button
 
     def _tap_square(self, square: chess.Square) -> None:
+        if self.controller.review_active:
+            return
         self.controller.tap(square)
         self._redraw()
 
@@ -236,21 +268,49 @@ class ChessMobileApp(App):
         self._redraw()
 
     def _reset(self, _button) -> None:
+        self.review_index = 0
         self.controller.reset()
+        self._redraw()
+
+    def _start_review(self, _button) -> None:
+        if self.controller.finished_game is not None:
+            self.review_index = 0
+            self.controller.start_review()
+            self._redraw()
+
+    def _previous_review(self, _button) -> None:
+        if self.controller.review_active:
+            self.review_index = max(0, self.review_index - 1)
+            self._redraw()
+
+    def _next_review(self, _button) -> None:
+        if self.controller.review_active and self.controller.finished_game is not None:
+            self.review_index = min(len(self.controller.finished_game.moves), self.review_index + 1)
+            self._redraw()
+
+    def _exit_review(self, _button) -> None:
+        self.controller.exit_review()
+        self.review_index = 0
         self._redraw()
 
     def _redraw(self) -> None:
         self.board_grid.clear_widgets()
+        display_board = (
+            self.controller.review_position(self.review_index)
+            if self.controller.review_active and self.controller.finished_game is not None
+            else self.controller.board
+        )
         for row in range(8):
             for column in range(8):
                 square = display_to_square(row, column, flipped=self.flipped)
-                piece = self.controller.board.piece_at(square)
+                piece = display_board.piece_at(square)
                 color = LIGHT_SQUARE if (row + column) % 2 == 0 else DARK_SQUARE
                 if square == self.controller.selected_square:
                     color = SELECTED_SQUARE
                 elif square in self.controller.legal_targets:
                     color = LEGAL_TARGET
                 button = Button(text="", background_normal="", background_color=color)
+                button.disabled = self.controller.review_active
                 if piece:
                     piece_widget = PieceWidget(piece=piece, pos=button.pos, size=button.size)
                     button.bind(
@@ -262,7 +322,13 @@ class ChessMobileApp(App):
                 self.board_grid.add_widget(button)
 
         self.evaluation.set_values(self.controller.evaluation_curve)
-        self.arrow.set_move(self.controller.recommended_move, self.flipped)
+        self.arrow.set_move(
+            None if self.controller.review_active else self.controller.recommended_move, self.flipped
+        )
+        completed, total = self.controller.review_progress
+        self.review_progress_label.text = f"Progreso de revisión: {completed}/{total}"
+        self.review_button.disabled = self.controller.finished_game is None or self.controller.review_active
+        self._render_review_detail()
         turn = "Blancas" if self.controller.board.turn == chess.WHITE else "Negras"
         if self.controller.board.is_game_over(claim_draw=True):
             self.status.text = f"Partida terminada: {self.controller.board.result(claim_draw=True)}"
@@ -272,3 +338,18 @@ class ChessMobileApp(App):
             )
         else:
             self.status.text = f"Turno: {turn} · toca una pieza y luego su destino"
+
+    def _render_review_detail(self) -> None:
+        if not self.controller.review_active or self.review_index == 0:
+            self.review_detail_label.text = "Jugada: —\nCategoría: — · Evaluación: — · Alternativa: —"
+            return
+        entry_index = self.review_index - 1
+        if entry_index >= len(self.controller.review_entries):
+            self.review_detail_label.text = "Jugada: analizando…\nCategoría: — · Evaluación: — · Alternativa: —"
+            return
+        entry = self.controller.review_entries[entry_index]
+        alternative = entry.best_alternative_san or "sin alternativa"
+        self.review_detail_label.text = (
+            f"Jugada: {entry.san}\nCategoría: {entry.category} · "
+            f"Evaluación: {entry.evaluation_after} · Alternativa: {alternative}"
+        )
