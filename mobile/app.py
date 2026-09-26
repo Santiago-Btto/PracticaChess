@@ -215,7 +215,7 @@ class ChessMobileApp(App):
         root.add_widget(self.board_surface)
 
         controls = GridLayout(
-            cols=2, rows=3, size_hint_y=None, height=dp(CONTROLS_HEIGHT), spacing=dp(SECTION_SPACING)
+            cols=2, rows=4, size_hint_y=None, height=dp(CONTROLS_HEIGHT), spacing=dp(SECTION_SPACING)
         )
         controls.add_widget(self._control_button("Voltear", self._flip))
         controls.add_widget(self._control_button("Deshacer", self._undo))
