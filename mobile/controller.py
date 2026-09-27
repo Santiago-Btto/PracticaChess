@@ -23,6 +23,8 @@ ANALYSIS_BUDGET_SECONDS = {"hint": 0.20, "review": 0.75}
 ANALYSIS_LIMITATION = (
     "Análisis local: libro de aperturas pequeño y búsqueda breve; no sustituye a Stockfish."
 )
+REVIEW_CATEGORIES = ("best move", "good move", "inaccuracy", "mistake", "blunder")
+CRITICAL_CATEGORY_RANK = {"inaccuracy": 1, "mistake": 2, "blunder": 3}
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,16 @@ class ReviewEntry:
     evaluation_after: int
     best_alternative_san: str | None
     terminal: bool
+
+
+@dataclass(frozen=True)
+class GameAnalysisSummary:
+    """Lectura general, local e inmutable de una revisión ya completa."""
+
+    category_counts: tuple[tuple[str, int], ...]
+    best_moves: tuple[ReviewEntry, ...]
+    critical_moments: tuple[ReviewEntry, ...]
+    explanation: str
 
 
 @dataclass(frozen=True)
@@ -192,6 +204,7 @@ class MobileGameController:
         self._snapshots: list[chess.Board] = []
         self.evaluation_curve: list[int] = []
         self.recommended_move: chess.Move | None = None
+        self.live_analysis_enabled = True
         self.analysis_source = "search"
         self.analysis_records: list[AnalysisRecord] = []
         self._generation = 0
@@ -203,6 +216,7 @@ class MobileGameController:
         self.review_active = False
         self.review_entries: list[ReviewEntry] = []
         self.review_progress = (0, 0)
+        self.review_summary: GameAnalysisSummary | None = None
         self._review_snapshot: FinishedGame | None = None
         self._review_cancel: Event | None = None
         self.refresh_analysis()
@@ -264,11 +278,27 @@ class MobileGameController:
 
     def refresh_analysis(self) -> chess.Move | None:
         """Recalcula la sugerencia local para que la interfaz nunca quede obsoleta."""
+        if not self.live_analysis_enabled:
+            self.recommended_move = None
+            return None
         self.request_analysis()
         return self.recommended_move
 
-    def request_analysis(self, *, purpose: str = "hint") -> _RequestToken:
+    def set_live_analysis_enabled(self, enabled: bool) -> None:
+        """Activa o desactiva las sugerencias automáticas de esta sesión."""
+        if self.live_analysis_enabled == enabled:
+            return
+        self.live_analysis_enabled = enabled
+        if not enabled:
+            self._invalidate_live_hint()
+            return
+        if not self.review_active:
+            self.refresh_analysis()
+
+    def request_analysis(self, *, purpose: str = "hint") -> _RequestToken | None:
         """Solicita análisis de una instantánea; nunca entrega datos sin validar token."""
+        if purpose == "hint" and not self.live_analysis_enabled:
+            return None
         self._next_request_id += 1
         token = _RequestToken(
             self._next_request_id, self.board.fen(), self._generation, self._review_generation, Event()
@@ -291,7 +321,11 @@ class MobileGameController:
         return worker.analyse_position(purpose=purpose, cancelled=cancelled)
 
     def _accept_analysis(self, token: _RequestToken, result: AnalysisResult | ReviewEntry) -> bool:
-        if not isinstance(result, AnalysisResult) or not self._token_is_current(token):
+        if (
+            not isinstance(result, AnalysisResult)
+            or not self.live_analysis_enabled
+            or not self._token_is_current(token)
+        ):
             return False
         self.recommended_move = result.best_move
         self._upsert_record(AnalysisRecord(result.fen, len(self.san_history), result.evaluation, result.best_move))
@@ -313,8 +347,21 @@ class MobileGameController:
         self._generation += 1
         self._review_generation += 1
         self._active_token = None
+        self.recommended_move = None
+
+    def _invalidate_live_hint(self) -> None:
+        if self._active_token is not None:
+            self._active_token.cancelled.set()
+        self._generation += 1
+        self._active_token = None
+        self.recommended_move = None
 
     def _upsert_record(self, record: AnalysisRecord) -> None:
+        if any(
+            item.ply == record.ply and item.fen == record.fen
+            for item in self.analysis_records
+        ):
+            return
         self.analysis_records = [item for item in self.analysis_records if item.ply != record.ply]
         self.analysis_records.append(record)
         self.analysis_records.sort(key=lambda item: item.ply)
@@ -377,6 +424,10 @@ class MobileGameController:
         snapshot = self._review_snapshot or self.finished_game
         if snapshot is None:
             raise ValueError("No hay partida finalizada para revisar")
+        return self._review_position_from_snapshot(snapshot, ply)
+
+    @staticmethod
+    def _review_position_from_snapshot(snapshot: FinishedGame, ply: int) -> chess.Board:
         if not 0 <= ply <= len(snapshot.moves):
             raise IndexError("Ply de revisión fuera de rango")
         board = chess.Board(snapshot.initial_fen)
@@ -392,7 +443,11 @@ class MobileGameController:
         self._review_cancel = Event()
         self.review_active = True
         self.review_entries = []
+        self.review_summary = None
         self.review_progress = (0, len(self._review_snapshot.moves))
+        if not self._review_snapshot.moves:
+            self.review_summary = self.summarize_review_entries(())
+            return
         self._request_next_review_entry(0)
 
     def exit_review(self) -> None:
@@ -403,6 +458,7 @@ class MobileGameController:
         self.review_active = False
         self.review_entries = []
         self.review_progress = (0, 0)
+        self.review_summary = None
         self._review_snapshot = None
         self._review_cancel = None
 
@@ -414,7 +470,7 @@ class MobileGameController:
         cancel = self._review_cancel
 
         def work() -> ReviewEntry:
-            before = self.review_position(index)
+            before = self._review_position_from_snapshot(snapshot, index)
             played = chess.Move.from_uci(snapshot.moves[index])
             san = before.san(played)
             before_result = self._analyse_fen(before.fen(), "review", cancel.is_set if cancel else None)
@@ -427,7 +483,7 @@ class MobileGameController:
                 else max(0, after_result.evaluation - before_result.evaluation)
             )
             alternative = None
-            original = self.review_position(index)
+            original = self._review_position_from_snapshot(snapshot, index)
             if before_result.best_move is not None and before_result.best_move != played:
                 alternative = original.san(before_result.best_move)
             return ReviewEntry(
@@ -446,13 +502,48 @@ class MobileGameController:
                 or not self.review_active
                 or self._review_snapshot != snapshot
                 or self._review_generation != generation
+                or result.ply != index + 1
             ):
                 return
             self.review_entries.append(result)
             self.review_progress = (len(self.review_entries), len(snapshot.moves))
-            self._request_next_review_entry(index + 1)
+            if self._review_entries_complete(snapshot):
+                self.review_summary = self.summarize_review_entries(tuple(self.review_entries))
+            else:
+                self._request_next_review_entry(index + 1)
 
         self._coordinator.submit(work, deliver)
+
+    def _review_entries_complete(self, snapshot: FinishedGame) -> bool:
+        return (
+            len(self.review_entries) == len(snapshot.moves)
+            and tuple(entry.ply for entry in self.review_entries) == tuple(range(1, len(snapshot.moves) + 1))
+        )
+
+    @staticmethod
+    def summarize_review_entries(entries: tuple[ReviewEntry, ...] | list[ReviewEntry]) -> GameAnalysisSummary:
+        """Resume entradas completas sin atribuirlas a un motor o servicio externo."""
+        ordered_entries = tuple(sorted(entries, key=lambda entry: entry.ply))
+        category_counts = tuple(
+            (category, sum(entry.category == category for entry in ordered_entries))
+            for category in REVIEW_CATEGORIES
+        )
+        best_moves = tuple(entry for entry in ordered_entries if entry.category == "best move")
+        critical_moments = tuple(
+            sorted(
+                (entry for entry in ordered_entries if entry.category in CRITICAL_CATEGORY_RANK),
+                key=lambda entry: (-CRITICAL_CATEGORY_RANK[entry.category], entry.ply),
+            )[:3]
+        )
+        counts = dict(category_counts)
+        explanation = (
+            "IA local: "
+            f"{counts['best move']} mejores, {counts['good move']} buenas, "
+            f"{counts['inaccuracy']} imprecisiones, {counts['mistake']} errores y "
+            f"{counts['blunder']} blunders. "
+            f"Se destacaron {len(best_moves)} mejores jugadas y {len(critical_moments)} momentos críticos."
+        )
+        return GameAnalysisSummary(category_counts, best_moves, critical_moments, explanation)
 
     def analysis_move(self) -> chess.Move | None:
         """Sugiere una jugada legal con libro exacto o búsqueda local breve.
@@ -591,8 +682,10 @@ class MobileGameController:
             return 0
 
         penalty = 0
+        # La penalización es deliberadamente menor que una captura segura de
+        # peón: desarrolla la dama con cautela sin anular una ganancia material.
         if piece.piece_type == chess.QUEEN:
-            penalty -= 45
+            penalty -= 30
         if any(previous.to_square == move.from_square for previous in self.board.move_stack[-6:]):
             penalty -= 24
         return penalty

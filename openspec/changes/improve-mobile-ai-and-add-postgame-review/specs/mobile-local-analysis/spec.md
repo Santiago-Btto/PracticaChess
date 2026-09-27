@@ -28,8 +28,23 @@ La aplicación SHALL mejorar el análisis local más allá de una evaluación de
 - **WHEN** the application analyzes a move during post-game review
 - **THEN** it may use the review budget without changing the configured budget for interactive hints
 
+### Requirement: User-controlled live best-move analysis
+La aplicación SHALL proporcionar una preferencia de sesión, activada por defecto, para activar o desactivar el análisis automático en vivo de mejores jugadas. Cuando esté desactivada, SHALL cancelar o invalidar la solicitud interactiva pendiente, no SHALL iniciar nuevas solicitudes interactivas después de cambios de tablero y no SHALL mostrar una sugerencia o indicador procedente de análisis en vivo. Cuando se reactive, SHALL solicitar análisis únicamente para la posición vigente. Esta preferencia SHALL NOT impedir una revisión post-partida que el usuario inicie explícitamente.
+
+#### Scenario: Disable live analysis while a hint is pending
+- **WHEN** the user disables live analysis while a hint request is still running
+- **THEN** the pending hint cannot update the recommended move or visible live-analysis indicators and later board changes do not schedule a new interactive hint
+
+#### Scenario: Re-enable live analysis for the current position
+- **WHEN** the user enables live analysis after making one or more moves while it was disabled
+- **THEN** the application requests a new interactive analysis for the current position and can display only that matching result
+
+#### Scenario: Start an explicit review while live analysis is disabled
+- **WHEN** the user starts post-game review with live analysis disabled
+- **THEN** the review remains available and uses its separate local review analysis budget
+
 ### Requirement: Position-bound, interruptible results
-La aplicación SHALL associate each asynchronous analysis request with the requested position and a monotonically newer request identity. It SHALL apply a completed result only when both still match the active request; it SHALL invalidate or cancel outstanding work after a move, undo, restart, board replacement, or review exit. A superseded result SHALL not alter the hint, evaluation history, review data, or visible board state.
+La aplicación SHALL associate each asynchronous analysis request with the requested position and a monotonically newer request identity. It SHALL apply a completed result only when both still match the active request; it SHALL invalidate or cancel outstanding work after a move, undo, restart, board replacement, review exit, or disabling live analysis. A superseded result SHALL not alter the hint, evaluation history, review data, or visible board state.
 
 #### Scenario: Board changes during analysis
 - **WHEN** the user makes a legal move while analysis for the prior position is still running
@@ -38,6 +53,10 @@ La aplicación SHALL associate each asynchronous analysis request with the reque
 #### Scenario: Restart invalidates pending work
 - **WHEN** the user restarts or undoes a game while an analysis or review job is running
 - **THEN** the job is cancelled or invalidated and it cannot repopulate data for the replaced game
+
+#### Scenario: Preference change invalidates a live result
+- **WHEN** the user disables live analysis after its result was requested but before it is delivered
+- **THEN** that result is discarded and cannot restore a live suggestion while the preference remains disabled
 
 ### Requirement: Analysis history reflects engine evaluation
 La aplicación SHALL retain analysis data for the initial position and each played position using the engine's evaluation rather than a separate material-only proxy. The retained data SHALL identify the analyzed position and any available recommended continuation so post-game review can explain the actual game without re-analyzing an unrelated board.

@@ -4,6 +4,7 @@ import pytest
 from mobile.controller import (
     AnalysisRecord,
     AnalysisResult,
+    GameAnalysisSummary,
     MobileGameController,
     ReviewEntry,
     display_to_square,
@@ -199,6 +200,150 @@ def test_exiting_review_invalidates_late_review_results():
 
     assert game.review_active is False
     assert game.review_entries == []
+
+
+def test_disabling_live_analysis_cancels_pending_hint_and_stops_board_refreshes():
+    executor = QueuedExecutor()
+    game = MobileGameController(executor=executor)
+    pending = game._active_token
+
+    game.set_live_analysis_enabled(False)
+
+    assert game.live_analysis_enabled is False
+    assert pending is not None and pending.cancelled.is_set()
+    assert game.recommended_move is None
+    queued_before_changes = len(executor.jobs)
+    game.tap(chess.E2)
+    game.tap(chess.E4)
+    game.undo()
+    game.reset()
+    game.refresh_analysis()  # la vista llama esto después de voltear el tablero
+    assert len(executor.jobs) == queued_before_changes
+
+    while executor.jobs:
+        executor.run_next()
+
+    assert game.recommended_move is None
+
+
+def test_reenabling_live_analysis_only_requests_current_position_and_review_stays_available():
+    executor = QueuedExecutor()
+    game = MobileGameController(executor=executor)
+    game.set_live_analysis_enabled(False)
+    executor.jobs.clear()
+    game.tap(chess.F2)
+    game.tap(chess.F3)
+    current_fen = game.board.fen()
+
+    game.set_live_analysis_enabled(True)
+
+    assert game.live_analysis_enabled is True
+    assert game._active_token is not None
+    assert game._active_token.fen == current_fen
+    executor.run_next()
+    assert game.recommended_move in game.board.legal_moves
+
+    game.set_live_analysis_enabled(False)
+    executor.jobs.clear()
+    _finish_fools_mate(game)
+    assert game.finished_game is not None
+    game.start_review()
+    assert game.review_active is True
+    assert executor.jobs
+
+
+def test_general_review_summary_counts_categories_and_orders_highlights_deterministically():
+    entries = (
+        ReviewEntry(3, "Qh5", "blunder", 20, -300, "Qe2", False),
+        ReviewEntry(1, "e4", "best move", 0, 0, None, False),
+        ReviewEntry(5, "Nc3", "best move", 10, 5, None, False),
+        ReviewEntry(2, "f6", "mistake", 0, -150, "e5", False),
+        ReviewEntry(4, "a3", "inaccuracy", -10, -70, "Nf3", False),
+        ReviewEntry(6, "d5", "good move", 5, 10, None, False),
+    )
+
+    summary = MobileGameController.summarize_review_entries(entries)
+
+    assert isinstance(summary, GameAnalysisSummary)
+    assert dict(summary.category_counts) == {
+        "best move": 2,
+        "good move": 1,
+        "inaccuracy": 1,
+        "mistake": 1,
+        "blunder": 1,
+    }
+    assert [entry.san for entry in summary.best_moves] == ["e4", "Nc3"]
+    assert [entry.san for entry in summary.critical_moments] == ["Qh5", "f6", "a3"]
+    assert "IA local" in summary.explanation
+
+
+def test_review_publishes_summary_only_after_all_entries_and_never_after_reset():
+    executor = QueuedExecutor()
+    game = MobileGameController(executor=executor)
+    game.set_live_analysis_enabled(False)
+    executor.jobs.clear()
+    _finish_fools_mate(game)
+
+    game.start_review()
+    executor.run_next()
+
+    assert len(game.review_entries) == 1
+    assert game.review_summary is None
+    while executor.jobs:
+        executor.run_next()
+    assert game.review_summary is not None
+    assert sum(dict(game.review_summary.category_counts).values()) == len(game.san_history)
+
+    game.start_review()
+    game.reset()
+    while executor.jobs:
+        executor.run_next()
+    assert game.review_summary is None
+
+
+def test_empty_local_summary_has_every_category_without_highlights():
+    summary = MobileGameController.summarize_review_entries(())
+
+    assert dict(summary.category_counts) == {
+        "best move": 0,
+        "good move": 0,
+        "inaccuracy": 0,
+        "mistake": 0,
+        "blunder": 0,
+    }
+    assert summary.best_moves == ()
+    assert summary.critical_moments == ()
+
+
+def test_terminal_review_entry_is_included_without_an_invented_alternative():
+    terminal = ReviewEntry(1, "Qh4#", "best move", 0, 1_000_000, None, True)
+
+    summary = MobileGameController.summarize_review_entries((terminal,))
+
+    assert dict(summary.category_counts)["best move"] == 1
+    assert summary.best_moves == (terminal,)
+    assert summary.critical_moments == ()
+    assert terminal.best_alternative_san is None
+
+
+def test_completed_summary_keeps_review_navigation_and_clears_on_exit():
+    executor = QueuedExecutor()
+    game = MobileGameController(executor=executor)
+    game.set_live_analysis_enabled(False)
+    executor.jobs.clear()
+    _finish_fools_mate(game)
+    final_fen = game.board.fen()
+
+    game.start_review()
+    while executor.jobs:
+        executor.run_next()
+
+    assert game.review_summary is not None
+    assert game.review_position(0).fen() == game.finished_game.initial_fen
+    assert game.review_position(len(game.finished_game.moves)).fen() == final_fen
+    game.exit_review()
+    assert game.review_summary is None
+    assert game.board.fen() == final_fen
 
 
 def test_tapping_a_piece_selects_it_and_then_plays_a_legal_move():

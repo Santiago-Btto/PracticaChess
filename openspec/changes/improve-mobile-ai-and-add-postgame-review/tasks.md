@@ -43,7 +43,29 @@
 - [x] 4.4 TRIANGULATE/REFACTOR: Añadir pruebas para entrar, navegar hasta primera/última posición, salir y reiniciar durante revisión; simplificar el renderizado de tablero para que no mute la partida finalizada; verificar `pytest tests/test_mobile_layout.py tests/test_mobile_controller.py` verde.
 - [x] 4.5 Actualizar las comprobaciones de empaquetado sólo si se tocan requisitos/recursos y confirmar que siguen sin permiso `INTERNET`, sin dependencias de red y con Android API 24+; verificar `pytest tests/test_mobile_packaging.py` verde.
 
-## 5. Validación integrada de APK
+## 5. Preferencia de análisis en vivo
 
-- [x] 5.1 Ejecutar `pytest tests/test_mobile_controller.py tests/test_mobile_layout.py tests/test_mobile_packaging.py` y verificar toda la suite móvil verde, registrando el total de pruebas y la evidencia TDD por tarea.
-- [ ] 5.2 Construir una APK de prueba con la configuración existente e instalarla en un dispositivo/emulador Android API 24+; verificar manualmente que la sugerencia sigue siendo fluida, la revisión de una partida terminada muestra progreso y navegación, y reiniciar/salir no muestra resultados viejos.
+- [x] 5.1 Ejecutar `pytest tests/test_mobile_controller.py` y registrar una línea base verde antes de cambiar la preferencia o la coordinación de sugerencias.
+- [x] 5.2 RED: Añadir pruebas con un ejecutor controlado que demuestren que desactivar el análisis en vivo cancela/invalida una sugerencia pendiente y evita nuevas solicitudes después de mover, deshacer, reiniciar y voltear; verificar que fallen contra el comportamiento automático actual.
+- [x] 5.3 GREEN: Implementar la preferencia de sesión activada por defecto, su API de cambio y el bloqueo de solicitudes/presentación de sugerencias en `mobile/controller.py`; verificar las pruebas de 5.2 verdes.
+- [x] 5.4 TRIANGULATE/REFACTOR: Añadir casos para reactivar sobre el FEN vigente y para iniciar una revisión explícita con el análisis en vivo apagado; asegurar que un resultado tardío no restaura una flecha o recomendación; verificar `pytest tests/test_mobile_controller.py` verde.
+- [x] 5.5 Ejecutar `pytest tests/test_mobile_layout.py tests/test_mobile_packaging.py` y registrar una línea base verde antes de cambiar los controles Kivy.
+- [x] 5.6 RED: Extender las pruebas de UI/layout para exigir un control táctil claramente rotulado, estado visible de análisis activo/inactivo y ausencia de indicador de mejor jugada cuando esté apagado; verificar que fallen contra la pantalla actual.
+- [x] 5.7 GREEN: Conectar el control de análisis en vivo y su presentación a `mobile/app.py` mediante el hilo principal de Kivy; verificar las pruebas de 5.6 verdes sin alterar los requisitos offline del empaquetado.
+- [x] 5.8 TRIANGULATE/REFACTOR: Probar apagar/reactivar desde la interfaz y conservar las dimensiones táctiles y los controles de revisión; verificar `pytest tests/test_mobile_layout.py tests/test_mobile_controller.py tests/test_mobile_packaging.py` verde.
+
+## 6. Resumen general post-partida
+
+- [x] 6.1 Ejecutar `pytest tests/test_mobile_controller.py` y registrar una línea base verde antes de cambiar los datos de revisión o el resumen.
+- [x] 6.2 RED: Añadir pruebas deterministas para un resumen completo que agrupe las cinco categorías, ordene mejores jugadas y momentos críticos, produzca una explicación local y no se publique con entradas parciales; verificar que fallen contra el controlador actual.
+- [x] 6.3 GREEN: Implementar el modelo inmutable y la derivación del resumen sólo al completar las entradas válidas de la instantánea activa; verificar las pruebas de 6.2 verdes.
+- [x] 6.4 TRIANGULATE/REFACTOR: Añadir casos de partida terminal, empate o colección vacía y cancelación/reinicio, comprobando que ningún resumen obsoleto sobreviva; verificar `pytest tests/test_mobile_controller.py` verde.
+- [x] 6.5 Ejecutar `pytest tests/test_mobile_layout.py` y registrar una línea base verde antes de modificar el panel de revisión.
+- [x] 6.6 RED: Extender las pruebas de UI/layout para exigir progreso sin resumen final mientras se analiza y, al completar, un panel de resumen con conteos, mejores jugadas, momentos críticos y aviso de IA local; verificar que fallen contra la pantalla actual.
+- [x] 6.7 GREEN: Mostrar el resumen completo en `mobile/app.py` sin bloquear Kivy y sin reemplazar la navegación por jugadas; verificar las pruebas de 6.6 verdes.
+- [x] 6.8 TRIANGULATE/REFACTOR: Probar navegación, salida y reinicio con el resumen visible, preservando el tablero final y tamaño táctil; verificar `pytest tests/test_mobile_layout.py tests/test_mobile_controller.py` verde.
+
+## 7. Validación integrada de APK
+
+- [x] 7.1 Ejecutar `pytest tests/test_mobile_controller.py tests/test_mobile_layout.py tests/test_mobile_packaging.py` y verificar toda la suite móvil verde, registrando el total de pruebas y la evidencia TDD por tarea.
+- [ ] 7.2 Construir una APK de prueba con la configuración existente e instalarla en un dispositivo/emulador Android API 24+; verificar manualmente que el análisis en vivo se active/desactive sin resultados viejos, que la revisión de una partida terminada muestre progreso, navegación y resumen completo, y que reiniciar/salir no muestre datos atrasados.

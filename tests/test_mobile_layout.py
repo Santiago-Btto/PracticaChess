@@ -99,3 +99,28 @@ def test_mobile_review_controls_keep_touch_sized_rows():
     )
 
     assert CONTROLS_HEIGHT / rows >= 48
+
+
+def test_mobile_ui_exposes_a_touch_toggle_and_hides_live_hint_when_disabled():
+    source = Path("mobile/app.py").read_text(encoding="utf-8")
+
+    assert "Analisis: activado" in source
+    assert "Analisis: desactivado" in source
+    assert "set_live_analysis_enabled" in source
+    assert "not self.controller.live_analysis_enabled" in source
+
+
+def test_mobile_review_ui_keeps_progress_until_a_local_ai_summary_is_complete():
+    source = Path("mobile/app.py").read_text(encoding="utf-8")
+
+    for text in (
+        "Resumen IA local",
+        "Mejores:",
+        "Buenas:",
+        "Imprecisiones:",
+        "Errores:",
+        "Blunders:",
+        "Momentos criticos:",
+    ):
+        assert text in source
+    assert "review_summary is None" in source

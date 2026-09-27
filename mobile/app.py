@@ -199,9 +199,18 @@ class ChessMobileApp(App):
         )
         self.review_detail_label = Label(text="", halign="center", valign="middle")
         self.review_detail_label.bind(size=lambda instance, value: setattr(instance, "text_size", value))
+        self.review_summary_label = Label(
+            text="Resumen IA local: pendiente de revision.",
+            halign="left",
+            valign="top",
+            size_hint_y=None,
+            height=dp(88),
+        )
+        self.review_summary_label.bind(size=lambda instance, value: setattr(instance, "text_size", value))
         self.review_panel.add_widget(self.review_progress_label)
         self.review_panel.add_widget(self.analysis_note)
         self.review_panel.add_widget(self.review_detail_label)
+        self.review_panel.add_widget(self.review_summary_label)
         root.add_widget(self.review_panel)
 
         # La superficie es el único tramo flexible. El tablero se calcula dentro
@@ -220,6 +229,8 @@ class ChessMobileApp(App):
         controls.add_widget(self._control_button("Voltear", self._flip))
         controls.add_widget(self._control_button("Deshacer", self._undo))
         controls.add_widget(self._control_button("Reiniciar", self._reset))
+        self.live_analysis_button = self._control_button("Analisis: activado", self._toggle_live_analysis)
+        controls.add_widget(self.live_analysis_button)
         self.review_button = self._control_button("Revisar partida", self._start_review)
         controls.add_widget(self.review_button)
         controls.add_widget(self._control_button("Anterior", self._previous_review))
@@ -265,6 +276,10 @@ class ChessMobileApp(App):
     def _flip(self, _button) -> None:
         self.flipped = not self.flipped
         self.controller.refresh_analysis()
+        self._redraw()
+
+    def _toggle_live_analysis(self, _button) -> None:
+        self.controller.set_live_analysis_enabled(not self.controller.live_analysis_enabled)
         self._redraw()
 
     def _reset(self, _button) -> None:
@@ -323,19 +338,35 @@ class ChessMobileApp(App):
 
         self.evaluation.set_values(self.controller.evaluation_curve)
         self.arrow.set_move(
-            None if self.controller.review_active else self.controller.recommended_move, self.flipped
+            None
+            if self.controller.review_active or not self.controller.live_analysis_enabled
+            else self.controller.recommended_move,
+            self.flipped,
         )
         completed, total = self.controller.review_progress
         self.review_progress_label.text = f"Progreso de revisión: {completed}/{total}"
+        self.live_analysis_button.text = (
+            "Analisis: activado"
+            if self.controller.live_analysis_enabled
+            else "Analisis: desactivado"
+        )
+        self.analysis_note.text = (
+            "IA local · analisis en vivo activado"
+            if self.controller.live_analysis_enabled
+            else "IA local · analisis en vivo desactivado"
+        )
         self.review_button.disabled = self.controller.finished_game is None or self.controller.review_active
         self._render_review_detail()
+        self._render_review_summary()
         turn = "Blancas" if self.controller.board.turn == chess.WHITE else "Negras"
         if self.controller.board.is_game_over(claim_draw=True):
             self.status.text = f"Partida terminada: {self.controller.board.result(claim_draw=True)}"
-        elif self.controller.recommended_move:
+        elif self.controller.live_analysis_enabled and self.controller.recommended_move:
             self.status.text = (
                 f"Turno: {turn} · sugerencia: {self.controller.recommended_move.uci()}"
             )
+        elif not self.controller.live_analysis_enabled:
+            self.status.text = f"Turno: {turn} · analisis en vivo desactivado"
         else:
             self.status.text = f"Turno: {turn} · toca una pieza y luego su destino"
 
@@ -352,4 +383,21 @@ class ChessMobileApp(App):
         self.review_detail_label.text = (
             f"Jugada: {entry.san}\nCategoría: {entry.category} · "
             f"Evaluación: {entry.evaluation_after} · Alternativa: {alternative}"
+        )
+
+    def _render_review_summary(self) -> None:
+        if self.controller.review_summary is None:
+            self.review_summary_label.text = "Resumen IA local: pendiente de revision."
+            return
+        summary = self.controller.review_summary
+        counts = dict(summary.category_counts)
+        best_moves = ", ".join(entry.san for entry in summary.best_moves) or "—"
+        critical_moments = ", ".join(entry.san for entry in summary.critical_moments) or "—"
+        self.review_summary_label.text = (
+            "Resumen IA local\n"
+            f"Mejores: {counts['best move']} · Buenas: {counts['good move']} · "
+            f"Imprecisiones: {counts['inaccuracy']} · Errores: {counts['mistake']} · "
+            f"Blunders: {counts['blunder']}\n"
+            f"Mejores jugadas: {best_moves}\nMomentos criticos: {critical_moments}\n"
+            f"{summary.explanation}"
         )
